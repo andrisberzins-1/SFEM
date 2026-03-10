@@ -1,0 +1,10 @@
+[
+  {"name": "Steel S235",    "E_GPa": 210.0, "fy_MPa": 235.0, "fu_MPa": 360.0, "density_kg_m3": 7850},
+  {"name": "Steel S275",    "E_GPa": 210.0, "fy_MPa": 275.0, "fu_MPa": 430.0, "density_kg_m3": 7850},
+  {"name": "Steel S355",    "E_GPa": 210.0, "fy_MPa": 355.0, "fu_MPa": 510.0, "density_kg_m3": 7850},
+  {"name": "Steel S460",    "E_GPa": 210.0, "fy_MPa": 460.0, "fu_MPa": 540.0, "density_kg_m3": 7850},
+  {"name": "Concrete C25/30", "E_GPa": 31.0, "fck_MPa": 25.0, "density_kg_m3": 2500},
+  {"name": "Concrete C30/37", "E_GPa": 33.0, "fck_MPa": 30.0, "density_kg_m3": 2500},
+  {"name": "Concrete C35/45", "E_GPa": 34.0, "fck_MPa": 35.0, "density_kg_m3": 2500},
+  {"name": "Timber GL24h",    "E_GPa": 11.6, "fm_MPa": 24.0,  "density_kg_m3": 420}
+]

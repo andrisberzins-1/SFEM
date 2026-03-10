@@ -1,0 +1,12 @@
+{
+  "deform_scale": 10.0,
+  "diagram_scale_M": 1.0,
+  "diagram_scale_V": 1.0,
+  "diagram_scale_N": 1.0,
+  "arrow_scale": 1.0,
+  "hinge_size": 10,
+  "canvas_dark_mode": false,
+  "label_scale": 1.0,
+  "label_offset_scale": 1.0,
+  "line_thickness_scale": 1.0
+}

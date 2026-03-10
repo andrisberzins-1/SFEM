@@ -1,0 +1,59 @@
+metadata:
+  name: Test beam
+  structure_type: frame
+  format_version: 2
+  created: 2026-03-10 20:20
+  description: ''
+  mesh_size: 50
+materials:
+- id: 1
+  name: Steel S355
+  E_GPa: 210.0
+cross_sections:
+- id: 1
+  name: HEA 100
+  A_cm2: 21.2
+  Iz_cm4: 349.2
+  material_id: 1
+nodes:
+- id: 1
+  x: 0.0
+  y: 0.0
+- id: 2
+  x: 6.0
+  y: 2.0
+members:
+- id: 1
+  start_node: 1
+  end_node: 2
+  section_id: 1
+supports:
+- node_id: 1
+  type: pinned
+  spring_stiffness: null
+- node_id: 2
+  type: roller_x
+  spring_stiffness: null
+loads:
+- id: 1
+  type: UDL
+  node_or_member_id: 1
+  direction: Fy
+  magnitude: -200.0
+  udl_start: null
+  udl_end: null
+- id: 3
+  type: UDL
+  node_or_member_id: 1
+  direction: Fx
+  magnitude: 100.0
+  udl_start: null
+  udl_end: null
+display_settings:
+  diagram_scale_M: 1.0
+  diagram_scale_V: 1.0
+  diagram_scale_N: 1.0
+  deform_scale: 10.0
+  arrow_scale: 1.0
+  hinge_size: 10
+  canvas_dark_mode: false
