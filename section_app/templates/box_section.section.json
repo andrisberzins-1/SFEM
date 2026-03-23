@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "name": "Box section (RHS)",
+    "format_version": 1
+  },
+  "parts": [
+    {
+      "name": "Bottom plate",
+      "b": 100.0,
+      "h": 10.0,
+      "y_bot": 0.0,
+      "z_left": 0.0
+    },
+    {
+      "name": "Left web",
+      "b": 10.0,
+      "h": 180.0,
+      "y_bot": 10.0,
+      "z_left": 0.0
+    },
+    {
+      "name": "Right web",
+      "b": 10.0,
+      "h": 180.0,
+      "y_bot": 10.0,
+      "z_left": 90.0
+    },
+    {
+      "name": "Top plate",
+      "b": 100.0,
+      "h": 10.0,
+      "y_bot": 190.0,
+      "z_left": 0.0
+    }
+  ]
+}

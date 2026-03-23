@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "name": "L-section (angle)",
+    "format_version": 1
+  },
+  "parts": [
+    {
+      "name": "Horizontal leg",
+      "b": 100.0,
+      "h": 10.0,
+      "y_bot": 0.0,
+      "z_left": 0.0
+    },
+    {
+      "name": "Vertical leg",
+      "b": 10.0,
+      "h": 90.0,
+      "y_bot": 10.0,
+      "z_left": 0.0
+    }
+  ]
+}

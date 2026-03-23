@@ -1,0 +1,6 @@
+{
+    "name": "Member Capacity Check",
+    "port": 8504,
+    "icon": "\ud83c\udfcb\ufe0f",
+    "description": "Strength and buckling check for steel members per EC3 / EN 1993-1-1. Includes step-by-step Eurocode calculation with all intermediate values."
+}

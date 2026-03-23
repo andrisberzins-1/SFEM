@@ -23,14 +23,24 @@ import yaml
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from presets import get_preset_by_id, get_preset_names
-from solver import (
-    dict_to_model,
-    model_to_dict,
-    result_to_dict,
-    solve,
-    yaml_to_model,
-)
+try:
+    from fem_app.presets import get_preset_by_id, get_preset_names
+    from fem_app.solver import (
+        dict_to_model,
+        model_to_dict,
+        result_to_dict,
+        solve,
+        yaml_to_model,
+    )
+except ImportError:
+    from presets import get_preset_by_id, get_preset_names
+    from solver import (
+        dict_to_model,
+        model_to_dict,
+        result_to_dict,
+        solve,
+        yaml_to_model,
+    )
 
 # ---------------------------------------------------------------------------
 # Constants
