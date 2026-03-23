@@ -1,0 +1,6 @@
+{
+    "name": "2D FEM Analysis",
+    "port": 8501,
+    "icon": "\ud83c\udfd7\ufe0f",
+    "description": "2D structural FEM analysis with anastruct. Beams, frames, trusses with bending moment, shear, and axial diagrams."
+}

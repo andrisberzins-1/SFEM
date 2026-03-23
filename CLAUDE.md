@@ -1,47 +1,64 @@
-# SFEM — 2D FEM Web App
+# SFEM Educational Platform
+
+Multi-module educational platform for structural engineering students.
+Each module is a **standalone Streamlit app** in its own directory.
+
+## Architecture — Golden Rules
+
+1. **Modules NEVER share Python imports.** No cross-module imports, ever.
+2. **Solver file is single source of truth** for calculations — `app.py` NEVER implements math.
+3. Modules exchange data via JSON files in `exchange/` directory (not Python imports).
+4. Each module has: `app.py`, `*_solver.py`, `presets.py`, `tests/`, `requirements.txt`, `module.json`, `CLAUDE.md`.
+
+## Port Assignments
+
+| Module | Streamlit | FastAPI |
+|---|---|---|
+| Hub | 8500 | — |
+| fem_app | 8501 | 8502 |
+| section_app | 8503 | — |
+| (future) buckling_app | 8504 | — |
+| (future) strength_app | 8505 | — |
 
 ## Project Structure
-- `fem_app/app.py` — Streamlit frontend (RFEM-style layout), port 8501
-- `fem_app/solver.py` — anastruct wrapper, single source of truth for FEM
-- `fem_app/api.py` — FastAPI backend, port 8502
-- `fem_app/presets.py` — preset/template models
-- `fem_app/library.py` — material/section library loader
-- `fem_app/library/` — JSON data files (materials, HEA/HEB/IPE sections)
-- `fem_app/templates/` — .fem.yaml template files
-- `fem_app/settings.json` — user-default display settings
-- `fem_app/tests/` — pytest tests (79 analytical + robustness)
 
-## Key Commands
-```bash
-# Run the app
-streamlit run fem_app/app.py --server.port 8501
-
-# Run tests
-pytest fem_app/tests/ -x -q
-
-# Install dependencies
-pip install -r fem_app/requirements.txt
+```
+C:\SFEM\
+├── CLAUDE.md              # This file — platform-wide rules
+├── hub/app.py             # Launcher — auto-discovers modules via module.json
+├── fem_app/               # 2D FEM analysis (anastruct)
+├── section_app/           # Cross-section properties calculator
+├── exchange/              # JSON data exchange between modules
+├── run_all.bat            # Launches hub + all modules
+└── run_all.sh
 ```
 
-## Architecture Rules
-- **solver.py** is the ONLY file that imports anastruct
-- **app.py** does NOT import anastruct directly
-- Data model v2: MaterialDef, CrossSectionDef, MemberDef, HingeDef, LoadDef
-- Truss behavior via hinges (both ends released), not element_type
+## Common Patterns (ALL modules must follow)
 
-## Sign Conventions
-- anastruct `invert_y_loads=True`: positive Fy in `point_load()` = downward
-- Our loads: negative magnitude = downward force
-- Solver negates Fy before passing to anastruct
-- Multiple UDLs on same member: combined via `q_perp` parameter (not separate `q_load` calls — they overwrite!)
-- Reactions: `node.Fy` from anastruct gives correct upward reaction directly
+- Python **dataclasses** for all input/output data structures
+- **`st.data_editor`** for tabular input
+- **Plotly** for all visualization
+- Never expose Python tracebacks in UI — catch exceptions, show `st.error()` with human-readable message
+- All defaults as named constants at top of file — no magic numbers
 
-## Settings Persistence
-- Two-tier: user defaults in `fem_app/settings.json` + per-model in `.fem.yaml`
-- All 10 display settings: deform_scale, diagram_scale_M/V/N, arrow_scale, hinge_size, canvas_dark_mode, label_scale, label_offset_scale, line_thickness_scale
+## Testing
 
-## Known Constraints
-- `el.node_1.vertex` returns wrong coords after solve — use `el.vertex_1`/`el.vertex_2`
-- `st.data_editor` empty rows cause TypeError — skip rows with None IDs
-- Reactions "Sum" row: cast Node ID to str before concat (pyarrow error)
-- anastruct `q_load()` overwrites previous calls on same element — use `q_perp` param for combined loads
+- Every module has `tests/` that run WITHOUT any server: `pytest <module>/tests/ -v`
+- Verify against known analytical/catalogue values with relative tolerance
+- Run tests after ANY code change before declaring done
+
+## When Modifying a Module
+
+1. Read that module's `CLAUDE.md` first
+2. NEVER modify files in other modules
+3. NEVER add imports from other modules
+4. Run that module's tests after changes
+5. If adding a new module: create directory, add `module.json`, create `CLAUDE.md`, follow patterns above
+
+## Hub Discovery
+
+Modules register via `module.json` in their directory:
+```json
+{"name": "Module Name", "port": 8503, "icon": "...", "description": "..."}
+```
+Hub scans sibling directories for these files automatically.

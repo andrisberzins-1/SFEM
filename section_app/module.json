@@ -1,0 +1,6 @@
+{
+    "name": "Cross-Section Properties",
+    "port": 8503,
+    "icon": "\ud83d\udcd0",
+    "description": "Analytical calculator for composite cross-section properties (A, I, W, i) with step-by-step parallel axis theorem."
+}
