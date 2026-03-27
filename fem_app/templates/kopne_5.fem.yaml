@@ -1,0 +1,278 @@
+sfem:
+  module: fem_app
+  format: fem
+  type: model
+  format_version: 2
+  created: '2026-03-27T15:10:39'
+  name: Kopne 5
+  description: 14 nodes, 25 members, span=18m, h=2.0m. Net Fy=-165.0 kN.
+data:
+  format_version: 2
+  structure_type: truss
+  mesh_size: 50
+  materials:
+  - id: 1
+    name: Steel
+    E_GPa: 210.0
+  cross_sections:
+  - id: 1
+    name: Truss bar
+    A_cm2: 28.5
+    Iz_cm4: 1943.0
+    material_id: 1
+  nodes:
+  - id: 1
+    x: 0.0
+    y: 0.0
+  - id: 2
+    x: 0.0
+    y: 2.0
+  - id: 3
+    x: 3.0
+    y: 2.0
+  - id: 4
+    x: 3.0
+    y: 0.0
+  - id: 5
+    x: 6.0
+    y: 0.0
+  - id: 6
+    x: 6.0
+    y: 2.0
+  - id: 7
+    x: 9.0
+    y: 2.0
+  - id: 8
+    x: 9.0
+    y: 0.0
+  - id: 9
+    x: 12.0
+    y: 0.0
+  - id: 10
+    x: 12.0
+    y: 2.0
+  - id: 11
+    x: 15.0
+    y: 2.0
+  - id: 12
+    x: 15.0
+    y: 0.0
+  - id: 13
+    x: 18.0
+    y: 0.0
+  - id: 14
+    x: 18.0
+    y: 2.0
+  members:
+  - id: 1
+    start_node: 1
+    end_node: 2
+    section_id: 1
+  - id: 2
+    start_node: 2
+    end_node: 3
+    section_id: 1
+  - id: 3
+    start_node: 1
+    end_node: 3
+    section_id: 1
+  - id: 4
+    start_node: 1
+    end_node: 4
+    section_id: 1
+  - id: 5
+    start_node: 4
+    end_node: 3
+    section_id: 1
+  - id: 6
+    start_node: 4
+    end_node: 5
+    section_id: 1
+  - id: 7
+    start_node: 5
+    end_node: 3
+    section_id: 1
+  - id: 8
+    start_node: 6
+    end_node: 3
+    section_id: 1
+  - id: 9
+    start_node: 5
+    end_node: 6
+    section_id: 1
+  - id: 10
+    start_node: 5
+    end_node: 8
+    section_id: 1
+  - id: 11
+    start_node: 5
+    end_node: 7
+    section_id: 1
+  - id: 12
+    start_node: 6
+    end_node: 7
+    section_id: 1
+  - id: 13
+    start_node: 7
+    end_node: 10
+    section_id: 1
+  - id: 14
+    start_node: 7
+    end_node: 9
+    section_id: 1
+  - id: 15
+    start_node: 8
+    end_node: 9
+    section_id: 1
+  - id: 16
+    start_node: 7
+    end_node: 8
+    section_id: 1
+  - id: 17
+    start_node: 9
+    end_node: 10
+    section_id: 1
+  - id: 18
+    start_node: 9
+    end_node: 12
+    section_id: 1
+  - id: 19
+    start_node: 9
+    end_node: 11
+    section_id: 1
+  - id: 20
+    start_node: 10
+    end_node: 11
+    section_id: 1
+  - id: 21
+    start_node: 11
+    end_node: 14
+    section_id: 1
+  - id: 22
+    start_node: 11
+    end_node: 12
+    section_id: 1
+  - id: 23
+    start_node: 11
+    end_node: 13
+    section_id: 1
+  - id: 24
+    start_node: 12
+    end_node: 13
+    section_id: 1
+  - id: 25
+    start_node: 14
+    end_node: 13
+    section_id: 1
+  supports:
+  - node_id: 1
+    type: pinned
+    spring_stiffness: null
+  - node_id: 13
+    type: roller_x
+    spring_stiffness: null
+  loads:
+  - id: 1
+    type: point_force
+    node_or_member_id: 2
+    direction: Fy
+    magnitude: -22.5
+    udl_start: null
+    udl_end: null
+  - id: 2
+    type: point_force
+    node_or_member_id: 4
+    direction: Fy
+    magnitude: 45.0
+    udl_start: null
+    udl_end: null
+  - id: 3
+    type: point_force
+    node_or_member_id: 6
+    direction: Fy
+    magnitude: -45.0
+    udl_start: null
+    udl_end: null
+  - id: 4
+    type: point_force
+    node_or_member_id: 7
+    direction: Fy
+    magnitude: -45.0
+    udl_start: null
+    udl_end: null
+  - id: 5
+    type: point_force
+    node_or_member_id: 10
+    direction: Fy
+    magnitude: -30.0
+    udl_start: null
+    udl_end: null
+  - id: 6
+    type: point_force
+    node_or_member_id: 11
+    direction: Fy
+    magnitude: -45.0
+    udl_start: null
+    udl_end: null
+  - id: 7
+    type: point_force
+    node_or_member_id: 14
+    direction: Fy
+    magnitude: -22.5
+    udl_start: null
+    udl_end: null
+  hinges:
+  - member_id: 2
+    start_release: true
+    end_release: true
+  - member_id: 3
+    start_release: true
+    end_release: true
+  - member_id: 4
+    start_release: true
+    end_release: true
+  - member_id: 6
+    start_release: true
+    end_release: true
+  - member_id: 7
+    start_release: true
+    end_release: true
+  - member_id: 8
+    start_release: true
+    end_release: true
+  - member_id: 10
+    start_release: true
+    end_release: true
+  - member_id: 11
+    start_release: true
+    end_release: true
+  - member_id: 12
+    start_release: true
+    end_release: true
+  - member_id: 13
+    start_release: true
+    end_release: true
+  - member_id: 14
+    start_release: true
+    end_release: true
+  - member_id: 15
+    start_release: true
+    end_release: true
+  - member_id: 18
+    start_release: true
+    end_release: true
+  - member_id: 19
+    start_release: true
+    end_release: true
+  - member_id: 20
+    start_release: true
+    end_release: true
+  - member_id: 21
+    start_release: true
+    end_release: true
+  - member_id: 23
+    start_release: true
+    end_release: true
+  - member_id: 24
+    start_release: true
+    end_release: true

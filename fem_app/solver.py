@@ -431,13 +431,27 @@ def _build_system(model: ModelDefinition) -> tuple[SystemElements, dict[int, int
         if load.type == "UDL":
             udl_groups[load.node_or_member_id][load.direction] += load.magnitude
 
+    # Pre-process point forces: group by node to handle multiple loads on same node.
+    # anastruct's point_load() overwrites previous calls on the same node, so we
+    # must combine Fx and Fy forces into a single point_load call per node.
+    pf_groups: dict[int, dict[str, float]] = defaultdict(lambda: {"Fx": 0.0, "Fy": 0.0})
+    for load in model.loads:
+        if load.type == "point_force":
+            pf_groups[load.node_or_member_id][load.direction] += load.magnitude
+
     # Add loads
+    applied_pf_nodes: set[int] = set()
     applied_udl_members: set[int] = set()
     for load in model.loads:
         if load.type == "point_force":
-            an_node = node_id_map[load.node_or_member_id]
-            fx = load.magnitude if load.direction == "Fx" else 0.0
-            fy = load.magnitude if load.direction == "Fy" else 0.0
+            node_id = load.node_or_member_id
+            if node_id in applied_pf_nodes:
+                continue  # Already applied combined load for this node
+            applied_pf_nodes.add(node_id)
+
+            an_node = node_id_map[node_id]
+            fx = pf_groups[node_id]["Fx"]
+            fy = pf_groups[node_id]["Fy"]
             # anastruct with invert_y_loads=True: positive Fy = downward
             # Our convention: negative magnitude = downward force
             # So we negate Fy to match anastruct's inverted convention
