@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from solver import (
     ModelDefinition, NodeDef, MemberDef, SupportDef, LoadDef,
-    MaterialDef, CrossSectionDef,
+    MaterialDef, CrossSectionDef, HingeDef,
     solve, result_to_dict,
 )
 from presets import (
@@ -388,3 +388,288 @@ class TestPortalFrame:
         r4 = get_reaction(result, 4)
         assert_close(r1["Mz_kNm"], 0.0, "M_base_left")
         assert_close(r4["Mz_kNm"], 0.0, "M_base_right")
+
+
+# ---------------------------------------------------------------------------
+# Test: Kopne truss — 14 nodes, 25 members (regression test for node mapping bug)
+# ---------------------------------------------------------------------------
+
+
+KOPNE_STEEL = MaterialDef(id=1, name="Steel", E_GPa=210.0)
+KOPNE_SECTION = CrossSectionDef(id=1, A_cm2=28.5, Iz_cm4=19.43, material_id=1)
+
+KOPNE_MEMBERS_DEF = [
+    (1, 2), (2, 3), (1, 3), (1, 4), (4, 3), (4, 5), (5, 3), (6, 3), (5, 6), (5, 8),
+    (5, 7), (6, 7), (7, 10), (7, 9), (8, 9), (7, 8), (9, 10), (9, 12), (9, 11),
+    (10, 11), (11, 14), (11, 12), (11, 13), (12, 13), (14, 13),
+]
+KOPNE_NODES_DEF = [
+    (1, 0, 0), (2, 0, 1), (3, 2, 1), (4, 2, 0), (5, 4, 0), (6, 4, 1), (7, 6, 1),
+    (8, 6, 0), (9, 8, 0), (10, 8, 1), (11, 10, 1), (12, 10, 0), (13, 12, 0), (14, 12, 1),
+]
+
+
+def make_kopne_model(mesh_size=2):
+    """Build the kopne truss model used in BUG_TRUSS_REACTIONS.md."""
+    return ModelDefinition(
+        structure_type="truss",
+        mesh_size=mesh_size,
+        materials=[KOPNE_STEEL],
+        cross_sections=[KOPNE_SECTION],
+        nodes=[NodeDef(id=n[0], x=n[1], y=n[2]) for n in KOPNE_NODES_DEF],
+        members=[
+            MemberDef(id=i + 1, start_node=m[0], end_node=m[1], section_id=1)
+            for i, m in enumerate(KOPNE_MEMBERS_DEF)
+        ],
+        supports=[
+            SupportDef(node_id=1, type="pinned"),
+            SupportDef(node_id=13, type="roller_x"),
+        ],
+        loads=[
+            LoadDef(id=1, type="point_force", node_or_member_id=2, direction="Fy", magnitude=-5.0),
+            LoadDef(id=2, type="point_force", node_or_member_id=3, direction="Fy", magnitude=-10.0),
+            LoadDef(id=3, type="point_force", node_or_member_id=6, direction="Fy", magnitude=-30.0),
+            LoadDef(id=4, type="point_force", node_or_member_id=7, direction="Fy", magnitude=-10.0),
+            LoadDef(id=5, type="point_force", node_or_member_id=12, direction="Fy", magnitude=10.0),
+            LoadDef(id=6, type="point_force", node_or_member_id=14, direction="Fy", magnitude=-5.0),
+        ],
+        hinges=[
+            HingeDef(member_id=i, start_release=True, end_release=True)
+            for i in range(1, 26)
+        ],
+    )
+
+
+class TestKopneTruss:
+    """
+    Kopne truss: 14 nodes, 25 members, all pin-jointed.
+    Pinned at node 1 (0,0), roller at node 13 (12,0).
+
+    6 point loads totalling 50 kN downward net.
+
+    Hand calculation (moments about node 1):
+        ΣM₁ = (-5)(0) + (-10)(2) + (-30)(4) + (-10)(6) + (+10)(10) + (-5)(12) = -160 kNm
+        V₁₃ = 160/12 = 13.333 kN
+        V₁ = 50 - 13.333 = 36.667 kN
+
+    This is a regression test for the node mapping bug where anastruct
+    swaps node_id1/node_id2 relative to input coordinate order.
+    """
+
+    @pytest.fixture
+    def result(self):
+        model = make_kopne_model()
+        r = solve(model)
+        assert r.status == "ok", f"Solve failed: {r.error}"
+        return result_to_dict(r)
+
+    def test_vertical_equilibrium(self, result):
+        """Sum of vertical reactions must equal sum of vertical loads (50 kN)."""
+        total_ry = sum(r["Ry_kN"] for r in result["reactions"])
+        assert_close(total_ry, 50.0, "ΣRy vs ΣFy")
+
+    def test_horizontal_equilibrium(self, result):
+        """No horizontal loads — horizontal reactions must sum to zero."""
+        total_rx = sum(r["Rx_kN"] for r in result["reactions"])
+        assert_close(total_rx, 0.0, "ΣRx")
+
+    def test_left_reaction(self, result):
+        """V₁ = 50 - 160/12 = 36.667 kN."""
+        r1 = get_reaction(result, 1)
+        assert_close(r1["Ry_kN"], 36.667, "V1")
+
+    def test_right_reaction(self, result):
+        """V₁₃ = 160/12 = 13.333 kN."""
+        r13 = get_reaction(result, 13)
+        assert_close(r13["Ry_kN"], 13.333, "V13")
+
+    def test_all_members_axial_only(self, result):
+        """All truss members must have zero shear and bending."""
+        for mr in result["member_results"]:
+            assert mr["V_max_kN"] < 0.01, f"Member {mr['member_id']} has shear"
+            assert mr["M_max_kNm"] < 0.01, f"Member {mr['member_id']} has bending"
+
+    def test_no_equilibrium_warning(self, result):
+        """A correctly solved model should produce no equilibrium warnings."""
+        assert result["warnings"] == [], f"Unexpected warnings: {result['warnings']}"
+
+
+# ---------------------------------------------------------------------------
+# Test: Simple triangle truss — minimal statically determinate case
+# ---------------------------------------------------------------------------
+
+
+class TestSimpleTriangleTruss:
+    """
+    Right triangle truss: 3 nodes, 3 members.
+    Nodes: A(0,0), B(4,0), C(2,3).
+    Pinned at A, roller at B.
+    P = 12 kN downward at C.
+
+    Statics:
+        ΣM_A = -12*2 + R_B*4 = 0  →  R_B = 6 kN
+        R_A_y = 12 - 6 = 6 kN
+        R_A_x = 0 (no horizontal loads)
+    """
+
+    @pytest.fixture
+    def result(self):
+        model = ModelDefinition(
+            structure_type="truss",
+            mesh_size=2,
+            materials=[MaterialDef(id=1, name="Steel", E_GPa=210.0)],
+            cross_sections=[CrossSectionDef(id=1, A_cm2=20.0, Iz_cm4=10.0, material_id=1)],
+            nodes=[
+                NodeDef(id=1, x=0.0, y=0.0),
+                NodeDef(id=2, x=4.0, y=0.0),
+                NodeDef(id=3, x=2.0, y=3.0),
+            ],
+            members=[
+                MemberDef(id=1, start_node=1, end_node=2, section_id=1),
+                MemberDef(id=2, start_node=2, end_node=3, section_id=1),
+                MemberDef(id=3, start_node=3, end_node=1, section_id=1),
+            ],
+            supports=[
+                SupportDef(node_id=1, type="pinned"),
+                SupportDef(node_id=2, type="roller_x"),
+            ],
+            loads=[
+                LoadDef(id=1, type="point_force", node_or_member_id=3, direction="Fy", magnitude=-12.0),
+            ],
+            hinges=[
+                HingeDef(member_id=i, start_release=True, end_release=True)
+                for i in range(1, 4)
+            ],
+        )
+        r = solve(model)
+        assert r.status == "ok", f"Solve failed: {r.error}"
+        return result_to_dict(r)
+
+    def test_vertical_equilibrium(self, result):
+        total_ry = sum(r["Ry_kN"] for r in result["reactions"])
+        assert_close(total_ry, 12.0, "ΣRy vs P")
+
+    def test_horizontal_equilibrium(self, result):
+        total_rx = sum(r["Rx_kN"] for r in result["reactions"])
+        assert_close(total_rx, 0.0, "ΣRx")
+
+    def test_left_reaction(self, result):
+        r1 = get_reaction(result, 1)
+        assert_close(r1["Ry_kN"], 6.0, "R_A_y")
+
+    def test_right_reaction(self, result):
+        r2 = get_reaction(result, 2)
+        assert_close(r2["Ry_kN"], 6.0, "R_B_y")
+
+    def test_axial_only(self, result):
+        for mr in result["member_results"]:
+            assert mr["V_max_kN"] < 0.01, f"Member {mr['member_id']} has shear"
+            assert mr["M_max_kNm"] < 0.01, f"Member {mr['member_id']} has bending"
+
+    def test_signed_axial_present(self, result):
+        """Verify N_signed_kN field is populated for truss members."""
+        for mr in result["member_results"]:
+            # All members carry axial force under this loading
+            assert mr["N_signed_kN"] != 0.0, f"Member {mr['member_id']} has zero signed axial"
+
+
+# ---------------------------------------------------------------------------
+# Test: Mesh independence — reactions must not depend on mesh_size
+# ---------------------------------------------------------------------------
+
+
+class TestTrussMeshIndependence:
+    """
+    Verify that truss reactions are identical regardless of mesh_size.
+    Uses the kopne truss (14 nodes, 25 members) — the model that
+    originally exposed the node mapping bug.
+
+    This test catches bugs where mesh subdivision affects node ID mapping.
+    """
+
+    @pytest.mark.parametrize("mesh_size", [1, 2, 5, 10, 50])
+    def test_reactions_mesh_invariant(self, mesh_size):
+        model = make_kopne_model(mesh_size=mesh_size)
+        r = solve(model)
+        assert r.status == "ok", f"Solve failed with mesh={mesh_size}: {r.error}"
+        rd = result_to_dict(r)
+
+        total_ry = sum(rx["Ry_kN"] for rx in rd["reactions"])
+        assert_close(total_ry, 50.0, f"ΣRy (mesh={mesh_size})")
+
+        r1 = get_reaction(rd, 1)
+        assert_close(r1["Ry_kN"], 36.667, f"V1 (mesh={mesh_size})")
+
+        r13 = get_reaction(rd, 13)
+        assert_close(r13["Ry_kN"], 13.333, f"V13 (mesh={mesh_size})")
+
+
+# ---------------------------------------------------------------------------
+# Test: Beam mesh independence — beams also must not depend on mesh_size
+# ---------------------------------------------------------------------------
+
+
+class TestBeamMeshIndependence:
+    """
+    Verify that beam reactions are identical regardless of mesh_size.
+    Uses a simply supported beam with UDL.
+    """
+
+    @pytest.mark.parametrize("mesh_size", [1, 2, 5, 50])
+    def test_reactions_mesh_invariant(self, mesh_size):
+        model = ModelDefinition(
+            structure_type="beam",
+            mesh_size=mesh_size,
+            materials=[MaterialDef(id=1, name="Steel", E_GPa=210.0)],
+            cross_sections=[CrossSectionDef(id=1, A_cm2=53.8, Iz_cm4=5410.0, material_id=1)],
+            nodes=[
+                NodeDef(id=1, x=0.0, y=0.0),
+                NodeDef(id=2, x=3.0, y=0.0),
+                NodeDef(id=3, x=6.0, y=0.0),
+            ],
+            members=[
+                MemberDef(id=1, start_node=1, end_node=2, section_id=1),
+                MemberDef(id=2, start_node=2, end_node=3, section_id=1),
+            ],
+            supports=[
+                SupportDef(node_id=1, type="pinned"),
+                SupportDef(node_id=3, type="roller_x"),
+            ],
+            loads=[
+                LoadDef(id=1, type="UDL", node_or_member_id=1, direction="Fy", magnitude=-10.0),
+                LoadDef(id=2, type="UDL", node_or_member_id=2, direction="Fy", magnitude=-10.0),
+            ],
+        )
+        r = solve(model)
+        assert r.status == "ok", f"Solve failed with mesh={mesh_size}: {r.error}"
+        rd = result_to_dict(r)
+
+        total_ry = sum(rx["Ry_kN"] for rx in rd["reactions"])
+        assert_close(total_ry, 60.0, f"ΣRy (mesh={mesh_size})")
+
+
+# ---------------------------------------------------------------------------
+# Test: Equilibrium warning field
+# ---------------------------------------------------------------------------
+
+
+class TestEquilibriumWarning:
+    """Verify the equilibrium check produces no warnings for correct models."""
+
+    def test_no_warning_beam(self):
+        model = preset_ss_beam_udl()
+        r = solve(model)
+        assert r.status == "ok"
+        assert r.warnings == [], f"Unexpected warnings: {r.warnings}"
+
+    def test_no_warning_truss(self):
+        model = preset_warren_truss()
+        r = solve(model)
+        assert r.status == "ok"
+        assert r.warnings == [], f"Unexpected warnings: {r.warnings}"
+
+    def test_no_warning_kopne(self):
+        model = make_kopne_model()
+        r = solve(model)
+        assert r.status == "ok"
+        assert r.warnings == [], f"Unexpected warnings: {r.warnings}"
