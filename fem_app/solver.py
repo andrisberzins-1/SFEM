@@ -168,6 +168,7 @@ class MemberResult:
     max_displacement_mm: float
     M_max_location_m: float
     V_max_location_m: float
+    N_signed_kN: float = 0.0  # signed axial: positive=tension, negative=compression
 
 
 @dataclass
@@ -187,6 +188,7 @@ class SolveResult:
     reactions: list[ReactionResult] = field(default_factory=list)
     member_results: list[MemberResult] = field(default_factory=list)
     nodes_displaced: list[NodeDisplacement] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -383,17 +385,12 @@ def _build_system(model: ModelDefinition) -> tuple[SystemElements, dict[int, int
 
         elem_id_map[member.id] = elem_id
 
-        # Map nodes — anastruct assigns node IDs based on coordinates
-        # Find the anastruct node IDs for the start and end of this element
-        el = ss.element_map[elem_id]
-        an_n1 = el.node_id1
-        an_n2 = el.node_id2
-
-        # Map model node IDs to anastruct node IDs by matching coordinates
-        if member.start_node not in node_id_map:
-            node_id_map[member.start_node] = an_n1
-        if member.end_node not in node_id_map:
-            node_id_map[member.end_node] = an_n2
+    # Map model node IDs to anastruct node IDs by coordinate lookup.
+    # We cannot rely on element node_id1/node_id2 ordering because anastruct
+    # may internally swap start/end nodes relative to the input coordinates.
+    for model_node in model.nodes:
+        an_nid = ss.find_node_id(vertex=[model_node.x, model_node.y])
+        node_id_map[model_node.id] = an_nid
 
     # Add supports
     for support in model.supports:
@@ -575,7 +572,10 @@ def solve(model: ModelDefinition) -> SolveResult:
         el = ss.element_map[an_eid]
 
         # Determine max absolute values
-        n_max = max(abs(el_res.get("Nmin", 0)), abs(el_res.get("Nmax", 0)))
+        n_min = el_res.get("Nmin", 0)
+        n_max_val = el_res.get("Nmax", 0)
+        n_max = max(abs(n_min), abs(n_max_val))
+        n_signed = n_min if abs(n_min) >= abs(n_max_val) else n_max_val
         v_max = max(abs(el_res.get("Qmin", 0)), abs(el_res.get("Qmax", 0)))
         m_max = max(abs(el_res.get("Mmin", 0)), abs(el_res.get("Mmax", 0)))
 
@@ -609,6 +609,7 @@ def solve(model: ModelDefinition) -> SolveResult:
             max_displacement_mm=round(max_disp_m * M_TO_MM, 6),
             M_max_location_m=round(m_loc, 4),
             V_max_location_m=round(v_loc, 4),
+            N_signed_kN=round(n_signed, 6),
         ))
 
     result.member_results.sort(key=lambda r: r.member_id)
@@ -624,6 +625,43 @@ def solve(model: ModelDefinition) -> SolveResult:
         ))
 
     result.nodes_displaced.sort(key=lambda r: r.node_id)
+
+    # --- Equilibrium check ---
+    # Sum applied loads (point forces only; UDL resultants need member lengths)
+    total_fx = 0.0
+    total_fy = 0.0
+    nc = {n.id: (n.x, n.y) for n in model.nodes}
+    for load in model.loads:
+        if load.type == "point_force":
+            if load.direction == "Fx":
+                total_fx += load.magnitude
+            elif load.direction == "Fy":
+                total_fy += load.magnitude
+        elif load.type == "UDL":
+            mid = load.node_or_member_id
+            member = next((m for m in model.members if m.id == mid), None)
+            if member:
+                x1, y1 = nc[member.start_node]
+                x2, y2 = nc[member.end_node]
+                length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                if load.direction == "Fy":
+                    total_fy += load.magnitude * length
+                elif load.direction == "Fx":
+                    total_fx += load.magnitude * length
+
+    sum_rx = sum(r.Rx_kN for r in result.reactions)
+    sum_ry = sum(r.Ry_kN for r in result.reactions)
+    residual_x = abs(sum_rx + total_fx)
+    residual_y = abs(sum_ry + total_fy)
+    max_load = max(abs(total_fx), abs(total_fy), 1.0)
+    tol = 1e-2 * max_load
+
+    if residual_x > tol or residual_y > tol:
+        result.warnings.append(
+            f"Equilibrium check failed: force residuals "
+            f"(Fx={residual_x:.3f} kN, Fy={residual_y:.3f} kN) "
+            f"exceed tolerance {tol:.3f} kN. Results may be unreliable."
+        )
 
     return result
 
@@ -1098,6 +1136,7 @@ def result_to_dict(result: SolveResult) -> dict:
     return {
         "status": result.status,
         "error": result.error,
+        "warnings": result.warnings,
         "reactions": [
             {
                 "node_id": r.node_id,
@@ -1111,6 +1150,7 @@ def result_to_dict(result: SolveResult) -> dict:
             {
                 "member_id": mr.member_id,
                 "N_max_kN": mr.N_max_kN,
+                "N_signed_kN": mr.N_signed_kN,
                 "V_max_kN": mr.V_max_kN,
                 "M_max_kNm": mr.M_max_kNm,
                 "max_displacement_mm": mr.max_displacement_mm,
