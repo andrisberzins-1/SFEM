@@ -27,6 +27,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yaml
 
+import file_io
 from library import get_section_families, load_materials_library, load_sections_library
 from solver import (
     CrossSectionDef,
@@ -37,6 +38,7 @@ from solver import (
     ModelDefinition,
     NodeDef,
     SupportDef,
+    dict_to_model,
     get_diagram_data,
     model_to_dict,
     model_to_yaml,
@@ -96,7 +98,6 @@ DEFAULT_DEFORM_SCALE = 50.0
 CANVAS_HEIGHT = 800
 
 # Templates directory (folder of .fem.yaml files)
-TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
 
 # User-default settings file
 SETTINGS_PATH = pathlib.Path(__file__).parent / "settings.json"
@@ -134,25 +135,14 @@ def save_default_settings() -> None:
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
-def _load_template_list() -> list[dict]:
-    """Scan templates/ for .fem.yaml files and return [{name, path}, ...]."""
-    if not TEMPLATES_DIR.is_dir():
-        return []
-    templates = []
-    for fp in sorted(TEMPLATES_DIR.glob("*.fem.yaml")):
-        try:
-            raw = yaml.safe_load(fp.read_text(encoding="utf-8"))
-            name = raw.get("metadata", {}).get("name", fp.stem.replace("_", " "))
-        except Exception:
-            name = fp.stem.replace("_", " ")
-        templates.append({"name": name, "path": fp})
-    return templates
-
-
-def _load_template_file(path: pathlib.Path) -> ModelDefinition:
-    """Load a .fem.yaml template file into a ModelDefinition."""
+def _load_template_model(path: pathlib.Path) -> ModelDefinition:
+    """Load a template file (old or new envelope format) into a ModelDefinition."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return yaml_to_model(raw)
+    sfem, data, _ = file_io.parse_envelope(raw)
+    model = dict_to_model(data)
+    model.name = sfem.get("name", "")
+    model.description = sfem.get("description", "")
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -1530,12 +1520,12 @@ def _draw_reaction_arrows(fig: go.Figure, model: ModelDefinition,
 # ---------------------------------------------------------------------------
 
 
-def render_top_menu():
-    """Render the top menu bar: File."""
-    cols = st.columns([1, 9])
-
-    with cols[0]:
-        with st.popover("File"):
+def render_sidebar_file():
+    """Render the File expander and model name in the sidebar."""
+    with st.sidebar:
+        # --- File section (expander) ---
+        with st.expander("File", expanded=False):
+            # New Model
             if st.button("New Model", use_container_width=True):
                 st.session_state.model = ModelDefinition()
                 st.session_state.model_name = ""
@@ -1553,7 +1543,6 @@ def render_top_menu():
                 st.session_state.show_moment = False
                 st.session_state.show_shear = False
                 st.session_state.show_axial = False
-                # Apply user-default settings (from settings.json)
                 _defaults = load_default_settings()
                 for key, val in _defaults.items():
                     st.session_state[key] = val
@@ -1561,23 +1550,7 @@ def render_top_menu():
                 _clear_editor_keys()
                 st.rerun()
 
-            # --- Load Model (compact file uploader) ---
-            st.markdown(
-                "<style>"
-                "[data-testid='stFileUploaderDropzone'] > div {"
-                "  display: none !important;}"
-                "[data-testid='stFileUploaderDropzone'] {"
-                "  border: none !important;"
-                "  padding: 0 !important;"
-                "  min-height: 0 !important;}"
-                "[data-testid='stFileUploaderDropzone'] span {"
-                "  width: 100%;}"
-                "[data-testid='stFileUploaderDropzone'] span button {"
-                "  width: 100%;"
-                "  border-radius: 0.5rem;}"
-                "</style>",
-                unsafe_allow_html=True,
-            )
+            # Load Model
             uploaded = st.file_uploader(
                 "Load Model",
                 type=["yaml", "fem.yaml"],
@@ -1587,14 +1560,16 @@ def render_top_menu():
             if uploaded is not None:
                 try:
                     text = uploaded.read().decode("utf-8")
-                    yaml_dict = yaml.safe_load(text)
-                    model = yaml_to_model(yaml_dict)
+                    raw = file_io.deserialize(text)
+                    sfem, data, ds = file_io.parse_envelope(raw)
+                    model = dict_to_model(data)
+                    model.name = sfem.get("name", "")
+                    model.description = sfem.get("description", "")
                     load_model_to_state(model)
-                    ds = yaml_dict.get("display_settings", {})
-                    # Restore all known settings from file, using current defaults as fallback
+                    # Restore display settings
                     _defaults = load_default_settings()
                     for key in DEFAULT_SETTINGS:
-                        if key in ds:
+                        if ds and key in ds:
                             st.session_state[key] = ds[key]
                         else:
                             st.session_state[key] = _defaults[key]
@@ -1603,19 +1578,19 @@ def render_top_menu():
                 except Exception as e:
                     st.error(f"Failed to load: {e}")
 
-            # --- Save Model ---
+            # Save Model
             model = model_from_state()
             has_data = has_model_data()
             if has_data:
-                yaml_str = model_to_yaml(model)
-                yaml_dict = yaml.safe_load(yaml_str)
-                yaml_dict["display_settings"] = {
-                    k: st.session_state.get(k, v) for k, v in DEFAULT_SETTINGS.items()
-                }
-                yaml_str = yaml.dump(yaml_dict, default_flow_style=False,
-                                     sort_keys=False, allow_unicode=True)
+                model_data = model_to_dict(model)
+                model_data["structure_type"] = model.structure_type
+                model_data["mesh_size"] = model.mesh_size
+                ds = {k: st.session_state.get(k, v) for k, v in DEFAULT_SETTINGS.items()}
+                envelope = file_io.make_model_envelope(
+                    model.name or "fem_model", model_data, display_settings=ds)
+                yaml_str = file_io.serialize_model(envelope)
                 name = st.session_state.model_name or "fem_model"
-                filename = f"{name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.fem.yaml"
+                filename = f"{name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.{file_io.MODEL_EXT}"
             else:
                 yaml_str = ""
                 filename = "fem_model.fem.yaml"
@@ -1628,19 +1603,42 @@ def render_top_menu():
                 disabled=not has_data,
             )
 
-            # --- Templates (expandable) ---
+            st.markdown("---")
+
+            # Save as Template
+            if st.button("Save as Template", use_container_width=True,
+                          help="Save model to templates for reuse"):
+                tpl_name = st.session_state.model_name
+                if not tpl_name.strip():
+                    st.error("Enter a model name first.")
+                elif not has_data:
+                    st.error("No model data to save.")
+                else:
+                    try:
+                        model_data = model_to_dict(model)
+                        model_data["structure_type"] = model.structure_type
+                        model_data["mesh_size"] = model.mesh_size
+                        env = file_io.make_model_envelope(tpl_name, model_data)
+                        path = file_io.save_template(env, tpl_name)
+                        st.success(f"Saved template: {path.name}")
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+
+            st.markdown("---")
+
+            # Templates
             with st.expander("Templates"):
-                templates = _load_template_list()
+                templates = file_io.load_template_list()
                 if templates:
                     for idx, tpl in enumerate(templates):
                         if st.button(tpl["name"], key=f"tpl_{idx}", use_container_width=True):
-                            model = _load_template_file(tpl["path"])
+                            model = _load_template_model(tpl["path"])
                             load_model_to_state(model)
                             st.rerun()
                 else:
                     st.caption("No templates found.")
 
-        # Model name below File button
+        # Model name
         st.session_state.model_name = st.text_input(
             "Model name",
             value=st.session_state.model_name,
@@ -2156,7 +2154,7 @@ def render_results_panel():
         if member_results:
             mr_df = pd.DataFrame(member_results)
             mr_df.columns = [
-                "Member ID", "N_max (kN)", "V_max (kN)", "M_max (kNm)",
+                "Member ID", "N_max (kN)", "N_signed (kN)", "V_max (kN)", "M_max (kNm)",
                 "Max Disp. (mm)", "M_max loc. (m)", "V_max loc. (m)",
             ]
             st.dataframe(mr_df, use_container_width=True, hide_index=True)
@@ -2242,8 +2240,8 @@ def main():
 
     init_session_state()
 
-    # Top menu bar
-    render_top_menu()
+    # Sidebar: File section + model name
+    render_sidebar_file()
 
     # Main layout: tree column + canvas/panel column
     tree_col, main_col = st.columns([1.2, 5])
