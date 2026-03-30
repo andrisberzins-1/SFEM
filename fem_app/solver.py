@@ -452,10 +452,10 @@ def _build_system(model: ModelDefinition) -> tuple[SystemElements, dict[int, int
             an_node = node_id_map[node_id]
             fx = pf_groups[node_id]["Fx"]
             fy = pf_groups[node_id]["Fy"]
-            # anastruct with invert_y_loads=True: positive Fy = downward
-            # Our convention: negative magnitude = downward force
-            # So we negate Fy to match anastruct's inverted convention
-            ss.point_load(node_id=an_node, Fx=fx, Fy=-fy)
+            # anastruct uses standard math convention: positive Fy = upward
+            # Our convention is the same: negative Fy = downward
+            # Pass loads as-is; negate only Ry on reaction output
+            ss.point_load(node_id=an_node, Fx=fx, Fy=fy)
 
         elif load.type == "UDL":
             member_id = load.node_or_member_id
@@ -467,21 +467,14 @@ def _build_system(model: ModelDefinition) -> tuple[SystemElements, dict[int, int
             total_qx = udl_groups[member_id]["Fx"]  # positive = rightward
             total_qy = udl_groups[member_id]["Fy"]   # our convention: negative = downward
 
-            # Convert to anastruct convention:
-            # direction="y" with invert_y_loads: positive q = downward
-            # q_perp with direction="y": perpendicular to y = x-direction
-            qy_an = -total_qy  # negate because anastruct inverts Y
-            qx_an = total_qx   # x-direction, no inversion
-
+            # anastruct uses standard math convention: positive q in y = upward
+            # Same as our convention, pass as-is
             if total_qx != 0.0 and total_qy != 0.0:
-                # Both directions present — use q_perp to apply in single call
-                ss.q_load(q=qy_an, element_id=an_elem, direction="y", q_perp=qx_an)
+                ss.q_load(q=total_qy, element_id=an_elem, direction="y", q_perp=total_qx)
             elif total_qy != 0.0:
-                # Fy only
-                ss.q_load(q=qy_an, element_id=an_elem, direction="y")
+                ss.q_load(q=total_qy, element_id=an_elem, direction="y")
             elif total_qx != 0.0:
-                # Fx only
-                ss.q_load(q=qx_an, element_id=an_elem, direction="x")
+                ss.q_load(q=total_qx, element_id=an_elem, direction="x")
 
         elif load.type == "point_moment":
             an_node = node_id_map[load.node_or_member_id]
@@ -570,7 +563,7 @@ def solve(model: ModelDefinition) -> SolveResult:
         result.reactions.append(ReactionResult(
             node_id=model_node_id,
             Rx_kN=round(node.Fx, 6),
-            Ry_kN=round(node.Fy, 6),
+            Ry_kN=round(-node.Fy, 6),  # anastruct Fy is negated vs standard convention
             Mz_kNm=round(node.Tz, 6),
         ))
 
