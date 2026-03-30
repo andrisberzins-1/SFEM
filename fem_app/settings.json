@@ -1,12 +1,16 @@
 {
   "deform_scale": 10.0,
-  "diagram_scale_M": 1.0,
-  "diagram_scale_V": 1.0,
-  "diagram_scale_N": 1.0,
-  "arrow_scale": 1.0,
-  "hinge_size": 10,
+  "diagram_scale_M": 0.3,
+  "diagram_scale_V": 0.3,
+  "diagram_scale_N": 0.3,
+  "arrow_scale": 0.4,
+  "hinge_size": 13,
   "canvas_dark_mode": false,
-  "label_scale": 1.0,
-  "label_offset_scale": 1.0,
-  "line_thickness_scale": 1.0
+  "label_scale": 1.5,
+  "label_offset_scale": 0.7,
+  "line_thickness_scale": 1.0,
+  "diagram_label_inset": 0.4,
+  "diagram_label_offset": 0.0,
+  "canvas_height": 800,
+  "support_scale": 0.5
 }

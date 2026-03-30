@@ -44,6 +44,7 @@ from solver import (
     model_to_yaml,
     result_to_dict,
     solve,
+    struct_to_model,
     yaml_to_model,
 )
 
@@ -95,7 +96,8 @@ COLOR_AXIAL_COMPRESSION_LINE = "rgba(214,39,40,1)"
 
 DEFAULT_DEFORM_SCALE = 50.0
 
-CANVAS_HEIGHT = 800
+MIN_CANVAS_HEIGHT = 300
+MAX_CANVAS_HEIGHT = 1600
 
 # Templates directory (folder of .fem.yaml files)
 
@@ -114,6 +116,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "label_scale": 1.0,
     "label_offset_scale": 1.0,
     "line_thickness_scale": 1.0,
+    "diagram_label_inset": 2.0,
+    "diagram_label_offset": 0.5,
+    "canvas_height": 800,
+    "support_scale": 1.0,
 }
 
 
@@ -574,18 +580,18 @@ def df_to_loads(df: pd.DataFrame) -> list[LoadDef]:
 # ---------------------------------------------------------------------------
 
 
-def _compute_auto_range(model: ModelDefinition, s_size: float = 0.0) -> tuple:
-    """Compute auto-scale range from geometry ONLY.
+def _add_invisible_padding_trace(fig: go.Figure, model: ModelDefinition,
+                                  s_size: float = 0.0) -> None:
+    """Add an invisible scatter trace that covers the full geometry extents.
 
-    This range is fixed and does NOT change when overlays (deformed,
-    M/V/N diagrams) are toggled.  Force diagrams and deformed shapes
-    are drawn on the geometry and may extend slightly outside the
-    viewport — this is the conventional engineering rendering approach.
+    Plotly's built-in autorange then centres and scales perfectly —
+    including the "reset axes" / home button — without us having to
+    compute manual ranges that fight with scaleanchor constraints.
     """
     all_x = [n.x for n in model.nodes] if model.nodes else [0]
     all_y = [n.y for n in model.nodes] if model.nodes else [0]
 
-    # Add padding for support symbols
+    # Include support-symbol extents
     if s_size > 0:
         supported_nodes = {s.node_id for s in model.supports}
         node_coords = {n.id: (n.x, n.y) for n in model.nodes}
@@ -598,13 +604,19 @@ def _compute_auto_range(model: ModelDefinition, s_size: float = 0.0) -> tuple:
 
     x_min, x_max = min(all_x), max(all_x)
     y_min, y_max = min(all_y), max(all_y)
-    x_range = x_max - x_min if x_max > x_min else 2
-    y_range = y_max - y_min if y_max > y_min else 2
+    x_span = x_max - x_min if x_max > x_min else 2
+    y_span = y_max - y_min if y_max > y_min else 2
+    margin = max(x_span, y_span, 2) * 0.05
 
-    # Fixed generous margin so force diagrams fit reasonably
-    margin = max(x_range, y_range, 2) * 0.35
-
-    return (x_min - margin, x_max + margin, y_min - margin, y_max + margin)
+    # Four corner points ensure autorange covers the full structure
+    fig.add_trace(go.Scatter(
+        x=[x_min - margin, x_max + margin, x_min - margin, x_max + margin],
+        y=[y_min - margin, y_max + margin, y_max + margin, y_min - margin],
+        mode="markers",
+        marker=dict(size=0.1, opacity=0),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
 
 
 def build_canvas_figure(model: ModelDefinition,
@@ -629,7 +641,11 @@ def build_canvas_figure(model: ModelDefinition,
                         dark_mode: bool = False,
                         label_scale: float = 1.0,
                         label_offset_scale: float = 1.0,
-                        line_thickness_scale: float = 1.0) -> go.Figure:
+                        line_thickness_scale: float = 1.0,
+                        diagram_label_inset: float = 2.0,
+                        diagram_label_offset: float = 0.5,
+                        canvas_height: int = 800,
+                        support_scale: float = 1.0) -> go.Figure:
     """Build a single unified Plotly figure with geometry + optional overlays."""
     fig = go.Figure()
 
@@ -650,7 +666,7 @@ def build_canvas_figure(model: ModelDefinition,
     all_x = [n.x for n in model.nodes] if model.nodes else [0]
     all_y = [n.y for n in model.nodes] if model.nodes else [0]
     max_dim = max(max(all_x) - min(all_x), max(all_y) - min(all_y), 1)
-    s_size = max_dim * 0.05
+    s_size = max_dim * 0.05 * support_scale
 
     # Members — solid dark gray, always same style regardless of overlays
     geom_color = COLOR_GEOMETRY
@@ -660,8 +676,8 @@ def build_canvas_figure(model: ModelDefinition,
     _fs_node = max(6, int(11 * label_scale))
     _fs_member = max(6, int(10 * label_scale))
     _fs_load = max(6, int(10 * label_scale))
-    _fs_diag = max(6, int(9 * label_scale))
-    _fs_react = max(6, int(9 * label_scale))
+    _fs_diag = max(6, int(10 * label_scale))
+    _fs_react = max(6, int(10 * label_scale))
     _yshift_member = int(12 * label_offset_scale)
     _yshift_node = int(12 * label_offset_scale)
     show_member_labels = show_member_labels_flag
@@ -680,20 +696,59 @@ def build_canvas_figure(model: ModelDefinition,
                 showlegend=False,
             ))
             mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-            # Member ID label (conditional)
-            if show_member_ids:
-                fig.add_annotation(x=mx, y=my, text=f"M{m.id}",
-                                   showarrow=False,
-                                   font=dict(size=_fs_member, color=COLOR_MEMBER_LABEL),
-                                   yshift=_yshift_member)
-            # Member label "start-end" (conditional, below member ID)
-            if show_member_labels:
+            dx, dy = x2 - x1, y2 - y1
+            length = math.sqrt(dx * dx + dy * dy) or 1.0
+            # Unit normal — always above the member (positive Y), or left
+            # for vertical members.  Ensures labels are consistently placed.
+            nx_perp, ny_perp = -dy / length, dx / length
+            # Flip if normal points downward (or leftward for vertical)
+            if ny_perp < -1e-9 or (abs(ny_perp) < 1e-9 and nx_perp > 0):
+                nx_perp, ny_perp = -nx_perp, -ny_perp
+            # Rotation angle in degrees for text alignment
+            angle_deg = math.degrees(math.atan2(dy, dx))
+            # Keep text readable (not upside-down)
+            if angle_deg > 90:
+                angle_deg -= 180
+            elif angle_deg < -90:
+                angle_deg += 180
+
+            # Offset distance perpendicular to member
+            offset_dist = max_dim * 0.015 * label_offset_scale
+
+            # Build combined label text
+            # Node labels show both directions so students can reference
+            # from either end: "2-5 / 5-2"
+            if show_member_ids and show_member_labels:
+                label_text = (f"M{m.id}  "
+                              f"{m.start_node}-{m.end_node} / "
+                              f"{m.end_node}-{m.start_node}")
                 fig.add_annotation(
-                    x=mx, y=my,
-                    text=f"{m.start_node}-{m.end_node}",
+                    x=mx + nx_perp * offset_dist,
+                    y=my + ny_perp * offset_dist,
+                    text=label_text,
                     showarrow=False,
                     font=dict(size=_fs_member, color=COLOR_MEMBER_LABEL),
-                    yshift=-_yshift_member,
+                    textangle=-angle_deg,
+                )
+            elif show_member_ids:
+                fig.add_annotation(
+                    x=mx + nx_perp * offset_dist,
+                    y=my + ny_perp * offset_dist,
+                    text=f"M{m.id}",
+                    showarrow=False,
+                    font=dict(size=_fs_member, color=COLOR_MEMBER_LABEL),
+                    textangle=-angle_deg,
+                )
+            elif show_member_labels:
+                label_text = (f"{m.start_node}-{m.end_node} / "
+                              f"{m.end_node}-{m.start_node}")
+                fig.add_annotation(
+                    x=mx + nx_perp * offset_dist,
+                    y=my + ny_perp * offset_dist,
+                    text=label_text,
+                    showarrow=False,
+                    font=dict(size=_fs_member, color=COLOR_MEMBER_LABEL),
+                    textangle=-angle_deg,
                 )
 
     # Draw hinge symbols AFTER all members so they appear on top
@@ -722,6 +777,39 @@ def build_canvas_figure(model: ModelDefinition,
                     hovertext=f"Hinge at M{m.id} end",
                 ))
 
+    # Precompute average member direction at each node (for smart label offset)
+    _node_member_dirs: dict[int, list[tuple[float, float]]] = {}
+    for m in model.members:
+        if m.start_node in node_coords and m.end_node in node_coords:
+            x1, y1 = node_coords[m.start_node]
+            x2, y2 = node_coords[m.end_node]
+            dx, dy = x2 - x1, y2 - y1
+            ln = math.sqrt(dx * dx + dy * dy) or 1.0
+            ux, uy = dx / ln, dy / ln
+            _node_member_dirs.setdefault(m.start_node, []).append((ux, uy))
+            _node_member_dirs.setdefault(m.end_node, []).append((-ux, -uy))
+
+    # Build occupied-direction map: start from member dirs, add load tails
+    # and support symbols.  Used to find the best node label placement.
+    _node_occupied: dict[int, list[tuple[float, float]]] = {
+        nid: list(dirs) for nid, dirs in _node_member_dirs.items()
+    }
+    # Load arrow tails (opposite to load direction)
+    for ld in model.loads:
+        if ld.type == "point_force" and ld.node_or_member_id in node_coords:
+            if ld.direction == "Fx":
+                d = (-1.0 if ld.magnitude > 0 else 1.0, 0.0)
+            elif ld.direction == "Fy":
+                d = (0.0, -1.0 if ld.magnitude > 0 else 1.0)
+            else:
+                continue
+            _node_occupied.setdefault(ld.node_or_member_id, []).append(d)
+    # Support symbols (always below the node)
+    for s in model.supports:
+        _node_occupied.setdefault(s.node_id, []).append((0.0, -1.0))
+
+    _node_label_offset = max_dim * 0.02 * label_offset_scale
+
     # Nodes
     for n in model.nodes:
         fig.add_trace(go.Scatter(
@@ -732,13 +820,43 @@ def build_canvas_figure(model: ModelDefinition,
             hovertext=f"Node {n.id}<br>({n.x}, {n.y}) m",
             showlegend=False,
         ))
-        # Node label as annotation (supports yshift for offset control)
+        # Node label — test 8 candidate directions, pick the one with
+        # the largest minimum angular gap from all occupied directions
+        # (members, load arrow tails, support symbols).
         if show_node_ids:
+            occupied = _node_occupied.get(n.id, [])
+            # 8 candidates: right, upper-right, up, upper-left, left,
+            #                lower-left, down, lower-right
+            _INV_SQRT2 = 0.7071
+            candidates = [
+                (1, 0), (_INV_SQRT2, _INV_SQRT2), (0, 1),
+                (-_INV_SQRT2, _INV_SQRT2), (-1, 0),
+                (-_INV_SQRT2, -_INV_SQRT2), (0, -1),
+                (_INV_SQRT2, -_INV_SQRT2),
+            ]
+            if occupied:
+                # Precompute occupied angles
+                occ_angles = [math.atan2(d[1], d[0]) for d in occupied]
+                best_cx, best_cy = 0, 1  # fallback: up
+                best_score = -1
+                for cx, cy in candidates:
+                    c_angle = math.atan2(cy, cx)
+                    # Minimum angular distance to any occupied direction
+                    min_gap = min(
+                        abs((c_angle - oa + math.pi) % (2 * math.pi) - math.pi)
+                        for oa in occ_angles
+                    )
+                    if min_gap > best_score:
+                        best_score = min_gap
+                        best_cx, best_cy = cx, cy
+                off_x = best_cx * _node_label_offset
+                off_y = best_cy * _node_label_offset
+            else:
+                off_x, off_y = 0, _node_label_offset
             fig.add_annotation(
-                x=n.x, y=n.y, text=f"{n.id}",
+                x=n.x + off_x, y=n.y + off_y, text=f"{n.id}",
                 showarrow=False,
                 font=dict(size=_fs_node, color=COLOR_NODE_LABEL),
-                yshift=_yshift_node,
             )
 
     # Support symbols — proper structural conventions
@@ -799,24 +917,28 @@ def build_canvas_figure(model: ModelDefinition,
     if show_moment and diagram_data:
         _add_force_overlay(fig, diagram_data, "M", COLOR_MOMENT, COLOR_MOMENT_LINE,
                            scale_factor=scale_M)
-        _add_force_value_annotations(fig, diagram_data, "M", scale_factor=scale_M, font_size=_fs_diag)
+        _add_force_value_annotations(fig, diagram_data, "M", scale_factor=scale_M, font_size=_fs_diag,
+                                     label_inset=diagram_label_inset, label_offset=diagram_label_offset)
     if show_shear and diagram_data:
         _add_force_overlay(fig, diagram_data, "Q", COLOR_SHEAR, COLOR_SHEAR_LINE,
                            scale_factor=scale_V)
-        _add_force_value_annotations(fig, diagram_data, "Q", scale_factor=scale_V, font_size=_fs_diag)
+        _add_force_value_annotations(fig, diagram_data, "Q", scale_factor=scale_V, font_size=_fs_diag,
+                                     label_inset=diagram_label_inset, label_offset=diagram_label_offset)
     if show_axial and diagram_data:
         _add_force_overlay(fig, diagram_data, "N",
                            COLOR_AXIAL_TENSION, COLOR_AXIAL_TENSION_LINE,
                            scale_factor=scale_N)
-        _add_force_value_annotations(fig, diagram_data, "N", scale_factor=scale_N, font_size=_fs_diag)
+        _add_force_value_annotations(fig, diagram_data, "N", scale_factor=scale_N, font_size=_fs_diag,
+                                     label_inset=diagram_label_inset, label_offset=diagram_label_offset)
 
     # --- Reaction arrows ---
     if show_reactions and solve_result and solve_result.status == "ok":
         _draw_reaction_arrows(fig, model, solve_result, s_size,
-                              font_size=_fs_react)
+                              font_size=_fs_react,
+                              arrow_scale=arrow_scale)
 
-    # --- Layout with fixed geometry-based scale ---
-    x_lo, x_hi, y_lo, y_hi = _compute_auto_range(model, s_size=s_size)
+    # --- Invisible padding trace — drives Plotly autorange ---
+    _add_invisible_padding_trace(fig, model, s_size=s_size)
 
     if dark_mode:
         bg_color = "#0e1117"
@@ -845,16 +967,21 @@ def build_canvas_figure(model: ModelDefinition,
         ticklen=5,
     )
 
+    # Canvas height from user setting, clamped to bounds
+    auto_height = max(MIN_CANVAS_HEIGHT, min(canvas_height, MAX_CANVAS_HEIGHT))
+
     layout_kwargs = dict(
         xaxis=dict(title="x (m)", scaleanchor="y", scaleratio=1,
-                   range=[x_lo, x_hi], **axis_common),
-        yaxis=dict(title="y (m)", range=[y_lo, y_hi], **axis_common),
+                   constrain="domain", **axis_common),
+        yaxis=dict(title="y (m)", constrain="domain", **axis_common),
         plot_bgcolor=bg_color,
         paper_bgcolor=bg_color,
-        height=CANVAS_HEIGHT,
+        autosize=True,
+        height=auto_height,
         margin=dict(l=40, r=40, t=20, b=40),
         showlegend=False,
         dragmode="pan",
+        uirevision="keep_zoom",  # preserve user zoom/pan across reruns
     )
     if text_clr:
         layout_kwargs["font"] = dict(color=text_clr)
@@ -1282,6 +1409,11 @@ def _add_force_overlay(fig: go.Figure, diagram_data: dict,
         angle = member["angle"]
         n_pts = len(x_coords)
 
+        # Skip members with zero force — no color, no diagram line
+        member_max = max((abs(v) for v in values), default=0)
+        if member_max < 1e-6:
+            continue
+
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
         sign = -1 if quantity == "M" else 1
@@ -1342,8 +1474,17 @@ def _add_force_overlay(fig: go.Figure, diagram_data: dict,
 
 def _add_force_value_annotations(fig: go.Figure, diagram_data: dict,
                                   quantity: str, scale_factor: float = 1.0,
-                                  font_size: int = 9):
-    """Add value annotations at start, end, and max locations of force diagrams."""
+                                  font_size: int = 9,
+                                  label_inset: float = 2.0,
+                                  label_offset: float = 0.5):
+    """Add value annotations at start, end, and interior max of force diagrams.
+
+    label_inset:  number of "label text widths" to move labels inward from
+                  member ends.  1 ≈ one label width.  Default 2.
+    label_offset: number of "label text heights" of extra perpendicular
+                  distance from the diagram line.  1 ≈ one text height.
+                  Default 0.5.
+    """
     if quantity == "M":
         color = COLOR_MOMENT_LINE
         unit = "kNm"
@@ -1369,42 +1510,76 @@ def _add_force_value_annotations(fig: go.Figure, diagram_data: dict,
     diagram_scale = struct_size * scale_factor * 0.05 / max_val
     sign = -1 if quantity == "M" else 1
 
+    # Approximate "one label text width" and "one label text height" in
+    # structural-coordinate space.  A label is typically ~6 characters at
+    # the given font_size.  We map pixel dimensions into coordinate space
+    # using a heuristic that 1 px ≈ struct_size / 600 (assuming ~600 px
+    # wide viewport).
+    px_per_unit = 600.0 / struct_size  # rough pixels per structural unit
+    char_width_px = font_size * 0.6  # average character width in px
+    label_width = 6 * char_width_px / px_per_unit  # ~6 chars in struct units
+    label_height = font_size * 1.4 / px_per_unit   # line height in struct units
+
+    # Convert user-facing values to structural-coordinate distances
+    inset_dist = label_inset * label_width      # along member
+    offset_dist = label_offset * label_height   # perpendicular
+
     for member in diagram_data["members"]:
         x_coords = member["x_coords"]
         y_coords = member["y_coords"]
         values = member.get(quantity, [0] * len(x_coords))
         angle = member["angle"]
         n_pts = len(x_coords)
-        if n_pts == 0:
+        if n_pts < 2:
             continue
 
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
 
-        # Find indices: start (0), end (-1), and max abs location
-        indices_to_label = set()
-        indices_to_label.add(0)
-        indices_to_label.add(n_pts - 1)
+        # Member length from coordinate arrays
+        dx = x_coords[-1] - x_coords[0]
+        dy = y_coords[-1] - y_coords[0]
+        mem_len = math.hypot(dx, dy)
+        if mem_len < 1e-9:
+            continue
 
-        # Find interior max
-        if n_pts > 2:
-            max_abs_val = 0
-            max_idx = 0
-            for i in range(1, n_pts - 1):
-                v = values[i] if i < len(values) else 0
-                if abs(v) > max_abs_val:
-                    max_abs_val = abs(v)
-                    max_idx = i
-            if max_abs_val > 0.001:
-                indices_to_label.add(max_idx)
+        # Skip members with all-zero values
+        member_max = max((abs(v) for v in values), default=0)
+        if member_max < 1e-6:
+            continue
 
-        for idx in indices_to_label:
-            v = values[idx] if idx < len(values) else 0
+        # Clamp inset to max 1/3 of member length
+        actual_inset = min(inset_dist, mem_len / 3.0)
+        # Fractional position along member [0..1]
+        t_start = actual_inset / mem_len
+        t_end = 1.0 - t_start
+        t_mid = 0.5
+
+        # Helper: interpolate value and position at fractional t
+        def _interp(t):
+            idx_f = t * (n_pts - 1)
+            idx_lo = max(0, min(int(idx_f), n_pts - 2))
+            idx_hi = idx_lo + 1
+            frac = idx_f - idx_lo
+            v = values[idx_lo] * (1 - frac) + values[idx_hi] * frac
+            px = x_coords[idx_lo] * (1 - frac) + x_coords[idx_hi] * frac
+            py = y_coords[idx_lo] * (1 - frac) + y_coords[idx_hi] * frac
+            return v, px, py
+
+        # Minimum separation in structural distance to avoid overlap
+        min_sep_dist = 2 * label_width
+
+        def _place_label(t):
+            v, px, py = _interp(t)
             if abs(v) < 0.001:
-                continue
-            offset = v * diagram_scale * sign
-            lx = x_coords[idx] + offset * (-sin_a)
-            ly = y_coords[idx] + offset * cos_a
+                return
+            diag_off = v * diagram_scale * sign
+            lx = px + diag_off * (-sin_a)
+            ly = py + diag_off * cos_a
+            if offset_dist > 0:
+                off_sign = 1 if diag_off >= 0 else -1
+                lx += off_sign * offset_dist * (-sin_a)
+                ly += off_sign * offset_dist * cos_a
             fig.add_annotation(
                 x=lx, y=ly,
                 text=f"{v:.2f}",
@@ -1414,13 +1589,31 @@ def _add_force_value_annotations(fig: go.Figure, diagram_data: dict,
                 borderpad=1,
             )
 
+        # --- End labels (inset from member ends) ---
+        _place_label(t_start)
+        _place_label(t_end)
+
+        # --- Middle label at midpoint ---
+        # Only shown when mid value differs meaningfully from both ends
+        mid_far_enough = (t_mid - t_start) * mem_len >= min_sep_dist
+        if mid_far_enough:
+            v_mid, _, _ = _interp(t_mid)
+            v_s, _, _ = _interp(t_start)
+            v_e, _, _ = _interp(t_end)
+            threshold = max(0.001, member_max * 0.05)
+            if (abs(v_mid) > 0.001
+                    and (abs(v_mid - v_s) > threshold
+                         or abs(v_mid - v_e) > threshold)):
+                _place_label(t_mid)
+
 
 def _draw_reaction_arrows(fig: go.Figure, model: ModelDefinition,
                            solve_result, s_size: float,
-                           font_size: int = 9):
+                           font_size: int = 9,
+                           arrow_scale: float = 1.0):
     """Draw reaction force arrows at support nodes (including zero values)."""
     node_coords = {n.id: (n.x, n.y) for n in model.nodes}
-    arrow_len = s_size * 3
+    arrow_len = s_size * 3 * arrow_scale
 
     # Build a map of which DOFs are restrained per node
     sup_map = {s.node_id: s for s in model.supports}
@@ -1481,7 +1674,7 @@ def _draw_reaction_arrows(fig: go.Figure, model: ModelDefinition,
         # Mz — curved moment arc (polyline approximation)
         if has_mz:
             direction = 1 if reaction.Mz_kNm > 0 else -1
-            r = s_size * 1.5
+            r = s_size * 1.5 * arrow_scale
             n_arc = 20
             arc_range = 1.5 * math.pi  # 270 degrees
             start_angle = -math.pi / 4
@@ -1520,10 +1713,26 @@ def _draw_reaction_arrows(fig: go.Figure, model: ModelDefinition,
 # ---------------------------------------------------------------------------
 
 
-def render_sidebar_file():
-    """Render the File expander and model name in the sidebar."""
+def _load_model_from_envelope(raw: dict):
+    """Load a model from a parsed SFEM envelope dict, applying display settings."""
+    sfem, data, ds = file_io.parse_envelope(raw)
+    model = dict_to_model(data)
+    model.name = sfem.get("name", "")
+    model.description = sfem.get("description", "")
+    load_model_to_state(model)
+    _defaults = load_default_settings()
+    for key in DEFAULT_SETTINGS:
+        if ds and key in ds:
+            st.session_state[key] = ds[key]
+        else:
+            st.session_state[key] = _defaults[key]
+    _clear_editor_keys()
+
+
+def render_sidebar():
+    """Render the unified sidebar: file operations, model tree, display, solve."""
     with st.sidebar:
-        # --- File section (expander) ---
+        # === File section ===
         with st.expander("File", expanded=False):
             # New Model
             if st.button("New Model", use_container_width=True):
@@ -1550,60 +1759,122 @@ def render_sidebar_file():
                 _clear_editor_keys()
                 st.rerun()
 
-            # Load Model
-            uploaded = st.file_uploader(
-                "Load Model",
-                type=["yaml", "fem.yaml"],
-                key="file_uploader",
-                label_visibility="collapsed",
+            # --- Compact file-uploader style (button only, no dropzone) ---
+            # Hide dropzone chrome; rename buttons via keyed containers
+            st.markdown(
+                "<style>"
+                "[data-testid='stFileUploaderDropzone'] > div {"
+                "  display: none !important;}"
+                "[data-testid='stFileUploaderDropzone'] {"
+                "  border: none !important;"
+                "  padding: 0 !important;"
+                "  min-height: 0 !important;}"
+                "[data-testid='stFileUploaderDropzone'] span {"
+                "  width: 100%;}"
+                "[data-testid='stFileUploaderDropzone'] span button {"
+                "  width: 100%;"
+                "  border-radius: 0.5rem;}"
+                ".st-key-import_bmp button { font-size: 0 !important; }"
+                ".st-key-import_bmp button::after {"
+                "  content: 'Import BMP Model'; font-size: 1rem; }"
+                ".st-key-load_model button { font-size: 0 !important; }"
+                ".st-key-load_model button::after {"
+                "  content: 'Load Model'; font-size: 1rem; }"
+                "</style>",
+                unsafe_allow_html=True,
             )
-            if uploaded is not None:
-                try:
-                    text = uploaded.read().decode("utf-8")
-                    raw = file_io.deserialize(text)
-                    sfem, data, ds = file_io.parse_envelope(raw)
-                    model = dict_to_model(data)
-                    model.name = sfem.get("name", "")
-                    model.description = sfem.get("description", "")
-                    load_model_to_state(model)
-                    # Restore display settings
-                    _defaults = load_default_settings()
-                    for key in DEFAULT_SETTINGS:
-                        if ds and key in ds:
-                            st.session_state[key] = ds[key]
-                        else:
-                            st.session_state[key] = _defaults[key]
-                    st.success(f"Loaded: {model.name}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to load: {e}")
 
-            # Save Model
+            # Import .struct
+            with st.container(key="import_bmp"):
+                struct_uploaded = st.file_uploader(
+                    "Import BMP Model",
+                    type=["struct"],
+                    key="struct_uploader",
+                    label_visibility="collapsed",
+                )
+            if struct_uploaded is not None:
+                fid = struct_uploaded.file_id
+                if fid != st.session_state.get("_last_struct_upload_id"):
+                    st.session_state._last_struct_upload_id = fid
+                    try:
+                        text = struct_uploaded.read().decode("utf-8")
+                        model = struct_to_model(text)
+                        fname = pathlib.Path(struct_uploaded.name).stem
+                        model.name = fname
+                        load_model_to_state(model)
+                        _clear_editor_keys()
+                        st.success(f"Imported: {fname}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Import failed: {e}")
+
+            # Load Model (file browser, defaults to saves/)
+            with st.container(key="load_model"):
+                load_uploaded = st.file_uploader(
+                    "Load Model",
+                    type=["yaml", "fem.yaml"],
+                    key="file_uploader",
+                    label_visibility="collapsed",
+                )
+            if load_uploaded is not None:
+                fid = load_uploaded.file_id
+                if fid != st.session_state.get("_last_upload_id"):
+                    st.session_state._last_upload_id = fid
+                    try:
+                        text = load_uploaded.read().decode("utf-8")
+                        raw = file_io.deserialize(text)
+                        _load_model_from_envelope(raw)
+                        st.success(f"Loaded: {st.session_state.model_name}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to load: {e}")
+
+            # Save Model (to saves/)
             model = model_from_state()
             has_data = has_model_data()
-            if has_data:
-                model_data = model_to_dict(model)
-                model_data["structure_type"] = model.structure_type
-                model_data["mesh_size"] = model.mesh_size
-                ds = {k: st.session_state.get(k, v) for k, v in DEFAULT_SETTINGS.items()}
-                envelope = file_io.make_model_envelope(
-                    model.name or "fem_model", model_data, display_settings=ds)
-                yaml_str = file_io.serialize_model(envelope)
-                name = st.session_state.model_name or "fem_model"
-                filename = f"{name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.{file_io.MODEL_EXT}"
-            else:
-                yaml_str = ""
-                filename = "fem_model.fem.yaml"
-            st.download_button(
-                "Save Model",
-                data=yaml_str,
-                file_name=filename,
-                mime="text/yaml",
-                use_container_width=True,
-                disabled=not has_data,
-            )
+            if st.button("Save Model", use_container_width=True, disabled=not has_data,
+                          help="Save model to saves/ folder"):
+                save_name = st.session_state.model_name
+                if not save_name.strip():
+                    st.error("Enter a model name first.")
+                else:
+                    try:
+                        model_data = model_to_dict(model)
+                        model_data["structure_type"] = model.structure_type
+                        model_data["mesh_size"] = model.mesh_size
+                        ds = {k: st.session_state.get(k, v) for k, v in DEFAULT_SETTINGS.items()}
+                        env = file_io.make_model_envelope(save_name, model_data, display_settings=ds)
+                        path = file_io.save_case(env, save_name)
+                        st.success(f"Saved: {path.name}")
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
 
-            st.markdown("---")
+            # Save / Export Results
+            has_results = (
+                st.session_state.solve_result is not None
+                and st.session_state.solve_result.status == "ok"
+            )
+            if st.button("Save Results", use_container_width=True, disabled=not has_results,
+                          help="Save analysis results to saves/ folder"):
+                res_name = st.session_state.model_name or "fem_result"
+                try:
+                    result_data = result_to_dict(st.session_state.solve_result)
+                    env = file_io.make_result_envelope(res_name, result_data)
+                    path = file_io.save_result_case(env, res_name)
+                    st.success(f"Saved: {path.name}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
+            if st.button("Export Results", use_container_width=True, disabled=not has_results,
+                          help="Export results to exchange/ for other modules"):
+                res_name = st.session_state.model_name or "fem_result"
+                try:
+                    result_data = result_to_dict(st.session_state.solve_result)
+                    env = file_io.make_result_envelope(res_name, result_data)
+                    path = file_io.save_to_exchange(env, res_name)
+                    st.success(f"Exported: {path.relative_to(path.parent.parent.parent)}")
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
 
             # Save as Template
             if st.button("Save as Template", use_container_width=True,
@@ -1623,8 +1894,6 @@ def render_sidebar_file():
                         st.success(f"Saved template: {path.name}")
                     except Exception as e:
                         st.error(f"Save failed: {e}")
-
-            st.markdown("---")
 
             # Templates
             with st.expander("Templates"):
@@ -1646,112 +1915,106 @@ def render_sidebar_file():
             placeholder="Model name",
         )
 
+        st.divider()
 
+        # === Model tree ===
+        model = st.session_state.model
 
-# ---------------------------------------------------------------------------
-# Model tree (left column)
-# ---------------------------------------------------------------------------
+        tree_items = [
+            ("Nodes", len(model.nodes), "nodes"),
+            ("Members", len(model.members), "members"),
+            ("Load & Supports", len(model.loads) + len(model.supports), "load_supports"),
+            ("Properties", len(model.materials) + len(model.cross_sections), "properties"),
+        ]
 
+        for label, count, key in tree_items:
+            btn_label = f"{label} ({count})"
+            btn_type = "primary" if st.session_state.active_editor == key else "secondary"
+            if st.button(btn_label, key=f"tree_{key}", use_container_width=True, type=btn_type):
+                st.session_state.active_editor = key
+                st.session_state.show_results = False
+                st.rerun()
 
-def render_model_tree():
-    """Render the model tree with entity counts, toggles, and solve button."""
-    model = st.session_state.model
+        # Results button
+        has_results = (
+            st.session_state.solve_result is not None
+            and st.session_state.solve_result.status == "ok"
+        )
+        if has_results:
+            if st.button("Results", use_container_width=True,
+                         type="primary" if st.session_state.show_results else "secondary"):
+                st.session_state.show_results = True
+                st.session_state.active_editor = None
+                st.rerun()
 
-    tree_items = [
-        ("Nodes", len(model.nodes), "nodes"),
-        ("Members", len(model.members), "members"),
-        ("Load & Supports", len(model.loads) + len(model.supports), "load_supports"),
-        ("Properties", len(model.materials) + len(model.cross_sections), "properties"),
-    ]
-
-    for label, count, key in tree_items:
-        btn_label = f"{label} ({count})"
-        btn_type = "primary" if st.session_state.active_editor == key else "secondary"
-        if st.button(btn_label, key=f"tree_{key}", use_container_width=True, type=btn_type):
-            st.session_state.active_editor = key
+        # Settings button
+        if st.button("Settings", key="tree_settings", use_container_width=True,
+                     type="primary" if st.session_state.active_editor == "settings" else "secondary"):
+            st.session_state.active_editor = "settings"
             st.session_state.show_results = False
             st.rerun()
 
-    # Results button — right after tree items
-    has_results = (
-        st.session_state.solve_result is not None
-        and st.session_state.solve_result.status == "ok"
-    )
-    if has_results:
-        if st.button("Results", use_container_width=True,
-                     type="primary" if st.session_state.show_results else "secondary"):
-            st.session_state.show_results = True
-            st.session_state.active_editor = None
-            st.rerun()
+        # --- Visualization toggles ---
+        with st.expander("Display", expanded=True):
+            st.session_state.show_node_ids = st.checkbox(
+                "Node #", value=st.session_state.show_node_ids, key="cb_node_ids",
+            )
+            st.session_state.show_member_ids = st.checkbox(
+                "Member #", value=st.session_state.show_member_ids, key="cb_member_ids",
+            )
+            st.session_state.show_member_labels = st.checkbox(
+                "Member Label", value=st.session_state.show_member_labels,
+                key="cb_member_labels",
+            )
+            st.session_state.show_loads = st.checkbox(
+                "Loads", value=st.session_state.show_loads, key="cb_loads",
+            )
+            st.session_state.show_grid = st.checkbox(
+                "Grid", value=st.session_state.show_grid, key="cb_grid",
+            )
+            st.session_state.show_reactions = st.checkbox(
+                "Reactions", value=st.session_state.show_reactions,
+                disabled=not has_results, key="cb_reactions",
+            )
+            st.session_state.show_deformed = st.checkbox(
+                "Deformed", value=st.session_state.show_deformed,
+                disabled=not has_results, key="cb_deformed",
+            )
+            st.session_state.show_moment = st.checkbox(
+                "Moment (M)", value=st.session_state.show_moment,
+                disabled=not has_results, key="cb_moment",
+            )
+            st.session_state.show_shear = st.checkbox(
+                "Shear (V)", value=st.session_state.show_shear,
+                disabled=not has_results, key="cb_shear",
+            )
+            st.session_state.show_axial = st.checkbox(
+                "Axial (N)", value=st.session_state.show_axial,
+                disabled=not has_results, key="cb_axial",
+            )
 
-    # Settings button
-    if st.button("Settings", key="tree_settings", use_container_width=True,
-                 type="primary" if st.session_state.active_editor == "settings" else "secondary"):
-        st.session_state.active_editor = "settings"
-        st.session_state.show_results = False
-        st.rerun()
+        st.divider()
 
-    # --- Visualization toggles ---
-    with st.expander("Display", expanded=True):
-        st.session_state.show_node_ids = st.checkbox(
-            "Node #", value=st.session_state.show_node_ids, key="cb_node_ids",
-        )
-        st.session_state.show_member_ids = st.checkbox(
-            "Member #", value=st.session_state.show_member_ids, key="cb_member_ids",
-        )
-        st.session_state.show_member_labels = st.checkbox(
-            "Member Label", value=st.session_state.show_member_labels,
-            key="cb_member_labels",
-        )
-        st.session_state.show_loads = st.checkbox(
-            "Loads", value=st.session_state.show_loads, key="cb_loads",
-        )
-        st.session_state.show_grid = st.checkbox(
-            "Grid", value=st.session_state.show_grid, key="cb_grid",
-        )
-        st.session_state.show_reactions = st.checkbox(
-            "Reactions", value=st.session_state.show_reactions,
-            disabled=not has_results, key="cb_reactions",
-        )
-        st.session_state.show_deformed = st.checkbox(
-            "Deformed", value=st.session_state.show_deformed,
-            disabled=not has_results, key="cb_deformed",
-        )
-        st.session_state.show_moment = st.checkbox(
-            "Moment (M)", value=st.session_state.show_moment,
-            disabled=not has_results, key="cb_moment",
-        )
-        st.session_state.show_shear = st.checkbox(
-            "Shear (V)", value=st.session_state.show_shear,
-            disabled=not has_results, key="cb_shear",
-        )
-        st.session_state.show_axial = st.checkbox(
-            "Axial (N)", value=st.session_state.show_axial,
-            disabled=not has_results, key="cb_axial",
-        )
-
-    st.divider()
-
-    # Solve button
-    if st.button("Solve", type="primary", use_container_width=True):
-        model = model_from_state()
-        with st.status("Solving...", expanded=True) as status:
-            st.write("Validating model...")
-            result = solve(model)
-            st.session_state.solve_result = result
-            if result.status == "ok":
-                st.write("Extracting diagrams...")
-                st.session_state.diagram_data = get_diagram_data(model)
-                st.session_state.show_results = True
-                st.session_state.active_editor = None
-                status.update(label="Analysis complete!", state="complete")
-                st.toast("Analysis complete!")
-                st.rerun()
-            else:
-                st.session_state.diagram_data = None
-                st.session_state.show_results = False
-                status.update(label="Analysis failed", state="error")
-                st.error(result.error)
+        # Solve button
+        if st.button("Solve", type="primary", use_container_width=True):
+            model = model_from_state()
+            with st.status("Solving...", expanded=True) as status:
+                st.write("Validating model...")
+                result = solve(model)
+                st.session_state.solve_result = result
+                if result.status == "ok":
+                    st.write("Extracting diagrams...")
+                    st.session_state.diagram_data = get_diagram_data(model)
+                    st.session_state.show_results = True
+                    st.session_state.active_editor = None
+                    status.update(label="Analysis complete!", state="complete")
+                    st.toast("Analysis complete!")
+                    st.rerun()
+                else:
+                    st.session_state.diagram_data = None
+                    st.session_state.show_results = False
+                    status.update(label="Analysis failed", state="error")
+                    st.error(result.error)
 
 
 # ---------------------------------------------------------------------------
@@ -1764,11 +2027,11 @@ def render_editor_nodes():
     st.caption("Define node positions. Coordinates in metres (m).")
     edited = st.data_editor(
         nodes_to_df(model.nodes),
-        num_rows="dynamic", use_container_width=True, key="nodes_editor",
+        num_rows="dynamic", key="nodes_editor",
         column_config={
-            "node_id": st.column_config.NumberColumn("Node ID", min_value=1, step=1, format="%d"),
-            "x (m)": st.column_config.NumberColumn("x (m)", format="%.2f"),
-            "y (m)": st.column_config.NumberColumn("y (m)", format="%.2f"),
+            "node_id": st.column_config.NumberColumn("Node ID", min_value=1, step=1, format="%d", width="small"),
+            "x (m)": st.column_config.NumberColumn("x (m)", format="%.2f", width="small"),
+            "y (m)": st.column_config.NumberColumn("y (m)", format="%.2f", width="small"),
         },
     )
     if st.button("Apply", key="apply_nodes", type="primary"):
@@ -1784,15 +2047,15 @@ def render_editor_members():
     )
     df = members_to_df(model.members, model.hinges)
     edited = st.data_editor(
-        df, num_rows="dynamic", use_container_width=True, key="members_editor",
+        df, num_rows="dynamic", key="members_editor",
         column_config={
-            "member_id": st.column_config.NumberColumn("Member ID", min_value=1, step=1, format="%d"),
-            "label": st.column_config.TextColumn("Label", disabled=True),
-            "start_node": st.column_config.NumberColumn("Start Node", min_value=1, step=1, format="%d"),
-            "end_node": st.column_config.NumberColumn("End Node", min_value=1, step=1, format="%d"),
-            "section_id": st.column_config.NumberColumn("Section ID", min_value=1, step=1, format="%d"),
-            "hinge_start": st.column_config.CheckboxColumn("Hinge Start"),
-            "hinge_end": st.column_config.CheckboxColumn("Hinge End"),
+            "member_id": st.column_config.NumberColumn("Member ID", min_value=1, step=1, format="%d", width="small"),
+            "label": st.column_config.TextColumn("Label", disabled=True, width="small"),
+            "start_node": st.column_config.NumberColumn("Start Node", min_value=1, step=1, format="%d", width="small"),
+            "end_node": st.column_config.NumberColumn("End Node", min_value=1, step=1, format="%d", width="small"),
+            "section_id": st.column_config.NumberColumn("Section ID", min_value=1, step=1, format="%d", width="small"),
+            "hinge_start": st.column_config.CheckboxColumn("Hinge Start", width="small"),
+            "hinge_end": st.column_config.CheckboxColumn("Hinge End", width="small"),
         },
     )
     if st.button("Apply", key="apply_members", type="primary"):
@@ -1835,11 +2098,11 @@ def render_editor_properties():
     st.caption("Define materials. E in GPa. Leave Material ID blank for auto-assign.")
     edited_mat = st.data_editor(
         materials_to_df(model.materials),
-        num_rows="dynamic", use_container_width=True, key="materials_editor",
+        num_rows="dynamic", key="materials_editor",
         column_config={
-            "material_id": st.column_config.NumberColumn("Material ID", min_value=1, step=1, format="%d"),
-            "name": st.column_config.TextColumn("Name"),
-            "E (GPa)": st.column_config.NumberColumn("E (GPa)", format="%.1f"),
+            "material_id": st.column_config.NumberColumn("Material ID", min_value=1, step=1, format="%d", width="small"),
+            "name": st.column_config.TextColumn("Name", width="small"),
+            "E (GPa)": st.column_config.NumberColumn("E (GPa)", format="%.1f", width="small"),
         },
     )
     if st.button("Apply Materials", key="apply_materials", type="primary"):
@@ -1891,13 +2154,13 @@ def render_editor_properties():
     st.caption("Define cross-sections. A in cm\u00b2, Iz in cm\u2074. Reference a material ID.")
     edited_sec = st.data_editor(
         sections_to_df(model.cross_sections),
-        num_rows="dynamic", use_container_width=True, key="sections_editor",
+        num_rows="dynamic", key="sections_editor",
         column_config={
-            "section_id": st.column_config.NumberColumn("Section ID", min_value=1, step=1, format="%d"),
-            "name": st.column_config.TextColumn("Name"),
-            "A (cm\u00b2)": st.column_config.NumberColumn("A (cm\u00b2)", format="%.1f"),
-            "Iz (cm\u2074)": st.column_config.NumberColumn("Iz (cm\u2074)", format="%.1f"),
-            "material_id": st.column_config.NumberColumn("Material ID", min_value=1, step=1, format="%d"),
+            "section_id": st.column_config.NumberColumn("Section ID", min_value=1, step=1, format="%d", width="small"),
+            "name": st.column_config.TextColumn("Name", width="small"),
+            "A (cm\u00b2)": st.column_config.NumberColumn("A (cm\u00b2)", format="%.1f", width="small"),
+            "Iz (cm\u2074)": st.column_config.NumberColumn("Iz (cm\u2074)", format="%.1f", width="small"),
+            "material_id": st.column_config.NumberColumn("Material ID", min_value=1, step=1, format="%d", width="small"),
         },
     )
     if st.button("Apply Sections", key="apply_sections", type="primary"):
@@ -1916,12 +2179,12 @@ def render_editor_load_supports():
     )
     edited_sup = st.data_editor(
         supports_to_df(model.supports),
-        num_rows="dynamic", use_container_width=True, key="supports_editor",
+        num_rows="dynamic", key="supports_editor",
         column_config={
-            "node_id": st.column_config.NumberColumn("Node ID", min_value=1, step=1, format="%d"),
-            "support_type": st.column_config.SelectboxColumn("Type", options=SUPPORT_TYPES),
+            "node_id": st.column_config.NumberColumn("Node ID", min_value=1, step=1, format="%d", width="small"),
+            "support_type": st.column_config.SelectboxColumn("Type", options=SUPPORT_TYPES, width="small"),
             "spring_stiffness (kN/m or kNm/rad)": st.column_config.NumberColumn(
-                "Spring k (kN/m | kNm/rad)", format="%.1f",
+                "Spring k (kN/m | kNm/rad)", format="%.1f", width="small",
                 help="kN/m for spring_linear_x/y, kNm/rad for spring_rotational."),
         },
     )
@@ -1936,14 +2199,14 @@ def render_editor_load_supports():
     )
     edited_loads = st.data_editor(
         loads_to_df(model.loads, members=model.members),
-        num_rows="dynamic", use_container_width=True, key="loads_editor",
+        num_rows="dynamic", key="loads_editor",
         column_config={
-            "load_id": st.column_config.NumberColumn("Load ID", min_value=1, step=1, format="%d"),
-            "type": st.column_config.SelectboxColumn("Type", options=LOAD_TYPES),
-            "node_or_member_id": st.column_config.NumberColumn("Node/Member ID", min_value=1, step=1, format="%d"),
-            "member_label": st.column_config.TextColumn("Member Label", disabled=True),
-            "direction": st.column_config.SelectboxColumn("Direction", options=DIRECTIONS),
-            "magnitude": st.column_config.NumberColumn("Magnitude", format="%.2f"),
+            "load_id": st.column_config.NumberColumn("Load ID", min_value=1, step=1, format="%d", width="small"),
+            "type": st.column_config.SelectboxColumn("Type", options=LOAD_TYPES, width="small"),
+            "node_or_member_id": st.column_config.NumberColumn("Node/Member ID", min_value=1, step=1, format="%d", width="small"),
+            "member_label": st.column_config.TextColumn("Member Label", disabled=True, width="small"),
+            "direction": st.column_config.SelectboxColumn("Direction", options=DIRECTIONS, width="small"),
+            "magnitude": st.column_config.NumberColumn("Magnitude", format="%.2f", width="small"),
         },
     )
     if st.button("Apply Loads", key="apply_loads", type="primary"):
@@ -1964,9 +2227,8 @@ def render_settings_panel():
         and st.session_state.solve_result.status == "ok"
     )
 
-    # Wrap in a narrower container to keep number inputs compact (Issue 6)
-    col_main, col_spacer = st.columns([3, 1])
-    with col_main:
+    # Wrap in a keyed container so CSS can target number inputs
+    with st.container(key="settings_panel"):
         # --- General ---
         st.markdown("**General**")
         c1, c2, c3 = st.columns(3)
@@ -2025,6 +2287,32 @@ def render_settings_panel():
                 key="diagram_scale_N",
             )
 
+        # --- Diagram Labels ---
+        st.markdown("**Diagram Labels**")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.number_input(
+                "End inset",
+                min_value=0.0,
+                max_value=5.0,
+                value=st.session_state.diagram_label_inset,
+                step=0.5,
+                format="%.1f",
+                key="diagram_label_inset",
+                help="How far to move labels inward from member ends, in label-text-widths (default 2)",
+            )
+        with c2:
+            st.number_input(
+                "Offset",
+                min_value=0.0,
+                max_value=5.0,
+                value=st.session_state.diagram_label_offset,
+                step=0.5,
+                format="%.1f",
+                key="diagram_label_offset",
+                help="Extra perpendicular distance from diagram line, in label-text-heights (default 0.5)",
+            )
+
         # --- Symbols & Loads ---
         st.markdown("**Symbols & Loads**")
         c1, c2, c3 = st.columns(3)
@@ -2048,6 +2336,17 @@ def render_settings_panel():
                 step=1,
                 key="hinge_size",
                 help="Hinge circle diameter in pixels (default 10)",
+            )
+        with c3:
+            st.number_input(
+                "Support scale",
+                min_value=0.2,
+                max_value=3.0,
+                value=st.session_state.support_scale,
+                step=0.1,
+                format="%.1f",
+                key="support_scale",
+                help="Multiplier for support symbol size (default 1.0)",
             )
 
         # --- Display ---
@@ -2073,7 +2372,7 @@ def render_settings_panel():
                 step=0.1,
                 format="%.1f",
                 key="label_offset_scale",
-                help="Multiplier for label distance from objects (default 1.0)",
+                help="Multiplier for label distance from geometry — node IDs, member IDs (default 1.0)",
             )
         with c3:
             st.number_input(
@@ -2089,17 +2388,71 @@ def render_settings_panel():
 
         # --- Canvas ---
         st.markdown("**Canvas**")
-        st.checkbox(
-            "Dark mode",
-            value=st.session_state.canvas_dark_mode,
-            key="canvas_dark_mode",
-        )
+        c1, c2 = st.columns(2)
+        with c1:
+            st.number_input(
+                "Height (px)",
+                min_value=MIN_CANVAS_HEIGHT,
+                max_value=MAX_CANVAS_HEIGHT,
+                value=st.session_state.canvas_height,
+                step=50,
+                key="canvas_height",
+                help="Canvas height in pixels (default 800)",
+            )
+        with c2:
+            st.checkbox(
+                "Dark mode",
+                value=st.session_state.canvas_dark_mode,
+                key="canvas_dark_mode",
+            )
 
-        # --- Save as Defaults ---
+        # --- Save / Use Defaults ---
         st.divider()
-        if st.button("Save as Defaults", help="Save current settings as defaults for new models"):
-            save_default_settings()
-            st.success("Settings saved as defaults.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Save as System Default",
+                         use_container_width=True,
+                         help="Save current settings as defaults for all new models"):
+                save_default_settings()
+                st.success("Saved as system default.")
+        with c2:
+            _has_model = hasattr(st.session_state, "model") and st.session_state.model.nodes
+            _model_name = st.session_state.get("model_name", "").strip()
+            if st.button("Save as Model Default",
+                         use_container_width=True,
+                         disabled=not (_has_model and _model_name),
+                         help="Save current settings into the model's save file (overwrites)"):
+                try:
+                    _m = st.session_state.model
+                    _md = model_to_dict(_m)
+                    _md["structure_type"] = _m.structure_type
+                    _md["mesh_size"] = _m.mesh_size
+                    _ds = {k: st.session_state.get(k, v) for k, v in DEFAULT_SETTINGS.items()}
+                    _env = file_io.make_model_envelope(_model_name, _md, display_settings=_ds)
+                    _path = file_io.save_case_overwrite(_env, _model_name)
+                    st.success(f"Settings saved with model: {_path.name}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Use System Default",
+                         use_container_width=True,
+                         help="Apply your system-default settings to the current view"):
+                st.session_state["_pending_settings"] = load_default_settings()
+                st.rerun()
+        with c2:
+            _can_load_model = _has_model and _model_name
+            if st.button("Use Model Default",
+                         use_container_width=True,
+                         disabled=not _can_load_model,
+                         help="Apply the display settings saved with this model"):
+                ds = file_io.load_save_display_settings(_model_name)
+                if ds:
+                    pending = {k: ds[k] for k in DEFAULT_SETTINGS if k in ds}
+                    st.session_state["_pending_settings"] = pending
+                    st.rerun()
+                else:
+                    st.warning("No saved settings found for this model.")
 
 
 def render_bottom_panel():
@@ -2148,7 +2501,7 @@ def render_results_panel():
                 "Mz (kNm)": react_df["Mz (kNm)"].sum(),
             }])
             react_df = pd.concat([react_df, sum_row], ignore_index=True)
-            st.dataframe(react_df, use_container_width=True, hide_index=True)
+            st.dataframe(react_df, hide_index=True)
 
     with st.expander(f"Element Results ({len(member_results)} members)", expanded=False):
         if member_results:
@@ -2157,13 +2510,13 @@ def render_results_panel():
                 "Member ID", "N_max (kN)", "N_signed (kN)", "V_max (kN)", "M_max (kNm)",
                 "Max Disp. (mm)", "M_max loc. (m)", "V_max loc. (m)",
             ]
-            st.dataframe(mr_df, use_container_width=True, hide_index=True)
+            st.dataframe(mr_df, hide_index=True)
 
     with st.expander(f"Node Displacements ({len(nodes_disp)} nodes)", expanded=False):
         if nodes_disp:
             nd_df = pd.DataFrame(nodes_disp)
             nd_df.columns = ["Node ID", "dx (mm)", "dy (mm)", "rz (mrad)"]
-            st.dataframe(nd_df, use_container_width=True, hide_index=True)
+            st.dataframe(nd_df, hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2205,6 +2558,10 @@ def render_canvas():
             label_scale=st.session_state.get("label_scale", 1.0),
             label_offset_scale=st.session_state.get("label_offset_scale", 1.0),
             line_thickness_scale=st.session_state.get("line_thickness_scale", 1.0),
+            diagram_label_inset=st.session_state.get("diagram_label_inset", 2.0),
+            diagram_label_offset=st.session_state.get("diagram_label_offset", 0.5),
+            canvas_height=st.session_state.get("canvas_height", 800),
+            support_scale=st.session_state.get("support_scale", 1.0),
         )
         st.plotly_chart(fig, use_container_width=True, config={
             "scrollZoom": False,
@@ -2234,25 +2591,49 @@ def main():
 
     # Reduce default Streamlit top padding
     st.markdown(
-        "<style>.block-container{padding-top:2.5rem;}</style>",
+        """<style>
+        .block-container{padding-top:2.5rem;}
+        /* Compact number inputs in settings panel */
+        .st-key-settings_panel [data-testid="stNumberInput"] {max-width:160px;}
+        /* Compact data editor tables */
+        [data-testid="stDataFrame"] {max-width:fit-content !important;}
+        [data-testid="stDataFrame"] table {width:auto !important;}
+        [data-testid="stDataFrame"] iframe {max-width:800px;}
+        </style>""",
         unsafe_allow_html=True,
     )
 
     init_session_state()
 
-    # Sidebar: File section + model name
-    render_sidebar_file()
+    # Restore settings that Streamlit may have cleared when the settings
+    # panel was not rendered (e.g. results view was showing instead).
+    # Streamlit removes widget-bound keys when their widgets are absent.
+    _snap_key = "_settings_snapshot"
+    if _snap_key in st.session_state:
+        for k, v in st.session_state[_snap_key].items():
+            if k not in st.session_state:
+                st.session_state[k] = v
 
-    # Main layout: tree column + canvas/panel column
-    tree_col, main_col = st.columns([1.2, 5])
+    # Apply pending settings from "Use System/Model Default" buttons.
+    # Must happen BEFORE any rendering so canvas picks up the new values.
+    _pending = st.session_state.pop("_pending_settings", None)
+    if _pending:
+        for key, val in _pending.items():
+            st.session_state[key] = val
 
-    with tree_col:
-        render_model_tree()
+    # Unified sidebar: file, model tree, display, solve
+    render_sidebar()
 
-    with main_col:
-        render_canvas()
-        st.divider()
-        render_bottom_panel()
+    # Main area: canvas + bottom panel
+    render_canvas()
+    st.divider()
+    render_bottom_panel()
+
+    # Snapshot settings AFTER all widgets have rendered and updated
+    # session state — this ensures we capture widget-modified values.
+    st.session_state[_snap_key] = {
+        k: st.session_state.get(k, v) for k, v in DEFAULT_SETTINGS.items()
+    }
 
 
 if __name__ == "__main__":

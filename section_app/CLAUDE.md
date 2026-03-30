@@ -70,15 +70,9 @@ Optional `offset_ref` + `offset_dim` for parametric sections.
 section_app/
 ├── app.py              # Streamlit frontend (port 8503)
 ├── section_solver.py   # Pure analytical calculator
-├── presets.py          # Preset builder functions (used by tests + template generation)
+├── file_io.py          # SFEM envelope file I/O (templates, saves, exchange)
 ├── templates/          # .section.json template files (auto-discovered)
-│   ├── i_beam.section.json
-│   ├── t_section.section.json
-│   ├── l_section.section.json
-│   ├── channel.section.json
-│   ├── box_section.section.json
-│   ├── hq_beam.section.json
-│   └── custom.section.json
+├── saves/              # User case saves (auto-created)
 ├── requirements.txt
 ├── tests/
 │   ├── test_section_calc.py
@@ -86,23 +80,27 @@ section_app/
 └── CLAUDE.md           # This file
 ```
 
-## Template Format
+## File Format — SFEM Envelope
 
-Templates are `.section.json` files stored in `templates/`. Auto-discovered by scanning the directory.
+Model files use the standard SFEM envelope:
 ```json
 {
-  "metadata": { "name": "...", "format_version": 1 },
-  "parts": [
-    { "name": "...", "b": 200.0, "h": 10.0, "y_bot": 0.0, "z_left": 0.0 }
-  ]
+  "sfem": { "module": "section_app", "format": "section", "type": "model", ... },
+  "data": { "parts": [ { "name": "...", "b": 200.0, "h": 10.0, "y_bot": 0.0, "z_left": 0.0 } ] }
 }
 ```
-File menu (sidebar popover): New, Load (file upload), Save (download), Templates (auto-discovered).
-Matches fem_app's File menu pattern.
+Result files (exchange):
+```json
+{
+  "sfem": { "module": "section_app", "format": "section_result", "type": "result", ... },
+  "data": { "A_mm2": ..., "Iy_mm4": ..., ... }
+}
+```
+Backward-compatible: loads old format files (`metadata` key instead of `sfem`).
 
 ## UI Layout
 
-- **Sidebar**: File popover (New/Load/Save/Templates), Section name, Settings (axis convention), Display toggles
+- **Sidebar**: File expander (New / Load: Browse+Templates / Save: Template+Case+Export Results), Section name, Settings (axis convention), Display toggles
 - **Main area**: Cross-section view → Section components (3 collapsible tables + Apply button) → Section properties summary → Step-by-step calculation
 - **CSS overrides**: Left-aligned LaTeX (`margin-left: 0` on Streamlit's auto-centered wrapper), fit-content table width
 

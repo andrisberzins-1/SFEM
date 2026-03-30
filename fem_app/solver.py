@@ -1117,12 +1117,21 @@ def dict_to_model(d: dict) -> ModelDefinition:
             spring_stiffness=s.get("spring_stiffness"),
         ))
 
+    # Backward-compat: map old "point_load" type to correct types
+    _LOAD_TYPE_COMPAT = {"point_load": "point_force"}
+
     for l in d.get("loads", []):
+        raw_type = l["type"]
+        load_type = _LOAD_TYPE_COMPAT.get(raw_type, raw_type)
+        direction = l.get("direction", "Fy")
+        # "point_load" with Mz direction should be "point_moment"
+        if raw_type == "point_load" and direction == "Mz":
+            load_type = "point_moment"
         model.loads.append(LoadDef(
             id=l["id"],
-            type=l["type"],
+            type=load_type,
             node_or_member_id=l.get("node_or_member_id", 0),
-            direction=l.get("direction", "Fy"),
+            direction=direction,
             magnitude=float(l.get("magnitude", 0)),
             udl_start=l.get("udl_start"),
             udl_end=l.get("udl_end"),
@@ -1134,6 +1143,96 @@ def dict_to_model(d: dict) -> ModelDefinition:
             start_release=h.get("start_release", False),
             end_release=h.get("end_release", False),
         ))
+
+    return model
+
+
+def struct_to_model(text: str) -> ModelDefinition:
+    """Parse a .struct file (teaching FEM software) into a ModelDefinition.
+
+    Unit conversions:
+      - Area: m² → cm² (×1e4)
+      - Inertia: m⁴ → cm⁴ (×1e8)
+      - Young's modulus: kPa → GPa (÷1e6)
+      - Forces/moments: already kN/kNm
+    """
+    model = ModelDefinition()
+    load_id = 1
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        tag = parts[0]
+
+        if tag == "P" and len(parts) >= 4:
+            model.nodes.append(NodeDef(
+                id=int(parts[1]), x=float(parts[2]), y=float(parts[3])))
+
+        elif tag == "F" and len(parts) >= 5:
+            nid = int(parts[1])
+            fx, fy, mz = float(parts[2]), float(parts[3]), float(parts[4])
+            if abs(fx) > 1e-9:
+                model.loads.append(LoadDef(id=load_id, type="point_force",
+                    node_or_member_id=nid, direction="Fx", magnitude=fx))
+                load_id += 1
+            if abs(fy) > 1e-9:
+                model.loads.append(LoadDef(id=load_id, type="point_force",
+                    node_or_member_id=nid, direction="Fy", magnitude=fy))
+                load_id += 1
+            if abs(mz) > 1e-9:
+                model.loads.append(LoadDef(id=load_id, type="point_moment",
+                    node_or_member_id=nid, direction="Mz", magnitude=mz))
+                load_id += 1
+
+        elif tag == "R" and len(parts) >= 5:
+            nid = int(parts[1])
+            rx, ry, rmz = int(parts[2]), int(parts[3]), int(parts[4])
+            if rx == 0 and ry == 0 and rmz == 0:
+                sup_type = "fixed"
+            elif rx == 0 and ry == 0 and rmz == 1:
+                sup_type = "pinned"
+            elif rx == 1 and ry == 0 and rmz == 1:
+                sup_type = "roller_x"   # free in X, restrained in Y
+            elif rx == 0 and ry == 1 and rmz == 1:
+                sup_type = "roller_y"   # free in Y, restrained in X
+            else:
+                sup_type = "pinned"
+            model.supports.append(SupportDef(node_id=nid, type=sup_type))
+
+        elif tag == "members" and len(parts) >= 6:
+            model.members.append(MemberDef(
+                id=int(parts[1]), start_node=int(parts[2]),
+                end_node=int(parts[3]), section_id=int(parts[4])))
+
+        elif tag == "members_hinges" and len(parts) >= 4:
+            h_start = int(parts[2]) == 1
+            h_end = int(parts[3]) == 1
+            if h_start or h_end:  # skip members with no releases
+                model.hinges.append(HingeDef(
+                    member_id=int(parts[1]),
+                    start_release=h_start,
+                    end_release=h_end))
+
+        elif tag == "sections" and len(parts) >= 4:
+            sid = int(parts[1])
+            model.cross_sections.append(CrossSectionDef(
+                id=sid, name=f"Section {sid}",
+                A_cm2=float(parts[2]) * 1e4,
+                Iz_cm4=float(parts[3]) * 1e8,
+                material_id=1))
+
+        elif tag == "materials" and len(parts) >= 4:
+            mid = int(parts[1])
+            model.materials.append(MaterialDef(
+                id=mid, name=f"Material {mid}",
+                E_GPa=float(parts[2]) / 1e6))
+
+    # Determine structure type
+    if model.hinges:
+        all_truss = all(h.start_release and h.end_release for h in model.hinges)
+        model.structure_type = "truss" if all_truss else "frame"
 
     return model
 

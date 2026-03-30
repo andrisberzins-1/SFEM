@@ -61,10 +61,11 @@ Two checks combined in one module:
 buckling_app/
 ├── app.py                  # Streamlit frontend (port 8504)
 ├── buckling_solver.py      # Strength + buckling calculations
-├── presets.py              # Preset member configurations
+├── file_io.py              # SFEM envelope file I/O (templates, saves, exchange)
 ├── module.json             # Hub discovery
 ├── requirements.txt
-├── templates/              # .buckling.json template files
+├── templates/              # .buckling.json template files (auto-discovered)
+├── saves/                  # User case saves (auto-created)
 ├── tests/
 │   ├── __init__.py
 │   └── test_buckling.py    # Analytical verification
