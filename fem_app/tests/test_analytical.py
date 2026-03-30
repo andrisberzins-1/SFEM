@@ -369,10 +369,10 @@ class TestPortalFrame:
         """
         Take moments about base left (node 1):
         H * 4m (clockwise) + R_right_y * 6m (counter-clockwise) = 0
-        So R_right_y = -H*4/6 = -6.667 kN
+        So R_right_y = +H*4/6 = +6.667 kN (upward)
         """
         r4 = get_reaction(result, 4)
-        expected_ry_right = -10.0 * 4.0 / 6.0  # -6.667 kN
+        expected_ry_right = 10.0 * 4.0 / 6.0  # +6.667 kN (upward)
         assert_close(r4["Ry_kN"], expected_ry_right, "R_right_y (moment eq)")
 
     def test_columns_have_moment(self, result):
