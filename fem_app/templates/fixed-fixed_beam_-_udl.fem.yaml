@@ -1,0 +1,49 @@
+sfem:
+  module: fem_app
+  format: fem
+  type: model
+  format_version: 2
+  created: '2026-03-23T12:15:05'
+  name: Fixed-fixed beam - UDL
+  description: L=6m, w=10 kN/m full span. Steel S275, HEA 300.
+data:
+  format_version: 2
+  structure_type: beam
+  mesh_size: 50
+  materials:
+  - id: 1
+    name: Steel S275
+    E_GPa: 210.0
+  cross_sections:
+  - id: 1
+    name: HEA 300
+    A_cm2: 112.5
+    Iz_cm4: 18260.0
+    material_id: 1
+  nodes:
+  - id: 1
+    x: 0.0
+    y: 0.0
+  - id: 2
+    x: 6.0
+    y: 0.0
+  members:
+  - id: 1
+    start_node: 1
+    end_node: 2
+    section_id: 1
+  supports:
+  - node_id: 1
+    type: fixed
+    spring_stiffness: null
+  - node_id: 2
+    type: fixed
+    spring_stiffness: null
+  loads:
+  - id: 1
+    type: UDL
+    node_or_member_id: 1
+    direction: Fy
+    magnitude: -10.0
+    udl_start: null
+    udl_end: null

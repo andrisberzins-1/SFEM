@@ -1,29 +1,36 @@
 {
-  "metadata": {
+  "sfem": {
+    "module": "section_app",
+    "format": "section",
+    "type": "model",
+    "format_version": 1,
+    "created": "",
     "name": "Channel (U-section)",
-    "format_version": 1
+    "description": ""
   },
-  "parts": [
-    {
-      "name": "Bottom flange",
-      "b": 75.0,
-      "h": 11.5,
-      "y_bot": 0.0,
-      "z_left": 0.0
-    },
-    {
-      "name": "Web",
-      "b": 8.5,
-      "h": 177.0,
-      "y_bot": 11.5,
-      "z_left": 0.0
-    },
-    {
-      "name": "Top flange",
-      "b": 75.0,
-      "h": 11.5,
-      "y_bot": 188.5,
-      "z_left": 0.0
-    }
-  ]
+  "data": {
+    "parts": [
+      {
+        "name": "Bottom flange",
+        "b": 75.0,
+        "h": 12.0,
+        "y_bot": 0.0,
+        "z_left": 0.0
+      },
+      {
+        "name": "Web",
+        "b": 8.0,
+        "h": 176.0,
+        "y_bot": 12.0,
+        "z_left": 0.0
+      },
+      {
+        "name": "Top flange",
+        "b": 75.0,
+        "h": 12.0,
+        "y_bot": 188.0,
+        "z_left": 0.0
+      }
+    ]
+  }
 }

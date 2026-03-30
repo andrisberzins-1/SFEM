@@ -1,0 +1,64 @@
+sfem:
+  module: fem_app
+  format: fem
+  type: model
+  format_version: 2
+  created: '2026-03-23T12:15:05'
+  name: Simple portal frame
+  description: Columns 4m, beam 6m, pinned bases, H=10kN top-left. Steel S275, HEB
+    200.
+data:
+  format_version: 2
+  structure_type: frame
+  mesh_size: 50
+  materials:
+  - id: 1
+    name: Steel S275
+    E_GPa: 210.0
+  cross_sections:
+  - id: 1
+    name: HEB 200
+    A_cm2: 78.1
+    Iz_cm4: 5700.0
+    material_id: 1
+  nodes:
+  - id: 1
+    x: 0.0
+    y: 0.0
+  - id: 2
+    x: 0.0
+    y: 4.0
+  - id: 3
+    x: 6.0
+    y: 4.0
+  - id: 4
+    x: 6.0
+    y: 0.0
+  members:
+  - id: 1
+    start_node: 1
+    end_node: 2
+    section_id: 1
+  - id: 2
+    start_node: 2
+    end_node: 3
+    section_id: 1
+  - id: 3
+    start_node: 3
+    end_node: 4
+    section_id: 1
+  supports:
+  - node_id: 1
+    type: pinned
+    spring_stiffness: null
+  - node_id: 4
+    type: pinned
+    spring_stiffness: null
+  loads:
+  - id: 1
+    type: point_force
+    node_or_member_id: 2
+    direction: Fx
+    magnitude: 10.0
+    udl_start: null
+    udl_end: null

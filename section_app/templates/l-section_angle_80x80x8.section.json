@@ -1,0 +1,29 @@
+{
+  "sfem": {
+    "module": "section_app",
+    "format": "section",
+    "type": "model",
+    "format_version": 1,
+    "created": "2026-03-24T16:08:59",
+    "name": "L-section (angle) 80x80x8",
+    "description": ""
+  },
+  "data": {
+    "parts": [
+      {
+        "name": "Horizontal leg",
+        "b": 80.0,
+        "h": 8.0,
+        "y_bot": 0.0,
+        "z_left": 0.0
+      },
+      {
+        "name": "Vertical leg",
+        "b": 8.0,
+        "h": 72.0,
+        "y_bot": 8.0,
+        "z_left": 0.0
+      }
+    ]
+  }
+}

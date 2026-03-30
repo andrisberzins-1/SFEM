@@ -41,11 +41,11 @@ from buckling_solver import (
     KN_TO_N,
     N_TO_KN,
 )
-from presets import PRESETS
+import file_io
 
-TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
-EXCHANGE_DIR = pathlib.Path(__file__).resolve().parent.parent / "exchange"
-EXCHANGE_SECTIONS_DIR = EXCHANGE_DIR / "sections"
+EXCHANGE_SECTIONS_DIR = (
+    pathlib.Path(__file__).resolve().parent.parent / "exchange" / "sections"
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -144,14 +144,9 @@ def _utilization_color(util: float) -> str:
     return COLOR_FAIL
 
 
-def _model_to_json(inp: MemberInput, name: str = "") -> str:
-    """Serialize MemberInput to JSON for save/load."""
-    payload = {
-        "metadata": {
-            "name": name or inp.name,
-            "format_version": 1,
-            "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        },
+def _member_to_data(inp: MemberInput) -> dict:
+    """Convert MemberInput to envelope data dict."""
+    return {
         "member": {
             "name": inp.name,
             "N_Ed_kN": inp.N_Ed_kN,
@@ -167,14 +162,13 @@ def _model_to_json(inp: MemberInput, name: str = "") -> str:
             "curve_z": inp.curve_z,
             "gamma_M0": inp.gamma_M0,
             "gamma_M1": inp.gamma_M1,
-        },
+        }
     }
-    return json.dumps(payload, indent=2)
 
 
-def _json_to_member(raw: dict) -> MemberInput:
-    """Parse JSON dict to MemberInput."""
-    m = raw["member"]
+def _data_to_member(data: dict) -> MemberInput:
+    """Convert envelope data dict to MemberInput."""
+    m = data["member"]
     return MemberInput(
         name=m.get("name", "Loaded"),
         N_Ed_kN=float(m["N_Ed_kN"]),
@@ -193,31 +187,22 @@ def _json_to_member(raw: dict) -> MemberInput:
     )
 
 
-def _load_template_list() -> list[dict]:
-    """Auto-discover template files from templates/ directory."""
-    if not TEMPLATES_DIR.is_dir():
-        return []
-    templates = []
-    for fp in sorted(TEMPLATES_DIR.glob("*.buckling.json")):
-        try:
-            raw = json.loads(fp.read_text(encoding="utf-8"))
-            name = raw.get("metadata", {}).get("name", fp.stem.replace("_", " "))
-        except Exception:
-            name = fp.stem.replace("_", " ")
-        templates.append({"name": name, "path": fp})
-    return templates
-
-
 def _load_exchange_sections() -> list[dict]:
     """List available section results from exchange directory."""
     if not EXCHANGE_SECTIONS_DIR.is_dir():
         return []
     sections = []
-    for fp in sorted(EXCHANGE_SECTIONS_DIR.glob("*.section_result.json")):
+    for fp in sorted(EXCHANGE_SECTIONS_DIR.glob("*.json")):
         try:
             raw = json.loads(fp.read_text(encoding="utf-8"))
-            name = raw.get("name", fp.stem)
-            sections.append({"name": name, "path": fp, "data": raw})
+            # Handle both new envelope and old flat format
+            if "sfem" in raw:
+                name = raw["sfem"].get("name", fp.stem)
+                data = raw.get("data", {})
+            else:
+                name = raw.get("name", fp.stem)
+                data = {"properties": raw.get("properties", {})}
+            sections.append({"name": name, "path": fp, "data": data})
         except Exception:
             continue
     return sections
@@ -267,11 +252,18 @@ def _sync_widget_keys(mi: "MemberInput"):
 # ---------------------------------------------------------------------------
 
 if "member_input" not in st.session_state:
-    default = PRESETS[0]["builder"]()
+    _tpls = file_io.load_template_list()
+    if _tpls:
+        _sfem, _data, _ = file_io.load_template(_tpls[0]["path"])
+        default = _data_to_member(_data)
+        st.session_state.member_name = _sfem.get("name", default.name)
+    else:
+        default = MemberInput()
+        st.session_state.member_name = default.name
     st.session_state.member_input = default
     _sync_widget_keys(default)
 if "member_name" not in st.session_state:
-    st.session_state.member_name = PRESETS[0]["name"]
+    st.session_state.member_name = st.session_state.member_input.name
 if "show_all_curves" not in st.session_state:
     st.session_state.show_all_curves = True
 if "show_step_by_step" not in st.session_state:
@@ -283,114 +275,147 @@ if "show_step_by_step" not in st.session_state:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    # (a) File popover
-    with st.popover("File", use_container_width=True):
-        # New
+    # --- File section ---
+    with st.expander("File", expanded=False):
+        # ── New ──
         if st.button("New Member", use_container_width=True):
-            st.session_state.member_input = PRESETS[-1]["builder"]()  # Custom
+            st.session_state.member_input = MemberInput()
             st.session_state.member_name = ""
             _sync_widget_keys(st.session_state.member_input)
             st.rerun()
 
-        # Load
+        st.markdown("---")
+
+        # ── Load ──
+        st.caption("Load")
+        # Compact file uploader (button-only, no dropzone)
+        st.markdown(
+            "<style>"
+            "[data-testid='stFileUploaderDropzone'] > div {"
+            "  display: none !important;}"
+            "[data-testid='stFileUploaderDropzone'] {"
+            "  border: none !important;"
+            "  padding: 0 !important;"
+            "  min-height: 0 !important;}"
+            "[data-testid='stFileUploaderDropzone'] span {"
+            "  width: 100%;}"
+            "[data-testid='stFileUploaderDropzone'] span button {"
+            "  width: 100%;"
+            "  border-radius: 0.5rem;}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
         uploaded = st.file_uploader(
-            "Load Member",
+            "Browse",
             type=["json"],
             key="buckling_uploader",
             label_visibility="collapsed",
         )
         if uploaded is not None:
-            try:
-                raw = json.loads(uploaded.read().decode("utf-8"))
-                inp = _json_to_member(raw)
-                st.session_state.member_input = inp
-                st.session_state.member_name = raw.get("metadata", {}).get("name", inp.name)
-                _sync_widget_keys(st.session_state.member_input)
-                st.success(f"Loaded: {inp.name}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to load: {e}")
+            fid = uploaded.file_id
+            if fid != st.session_state.get("_last_upload_id"):
+                st.session_state._last_upload_id = fid
+                try:
+                    raw = file_io.deserialize(uploaded.read().decode("utf-8"))
+                    sfem, data, _ = file_io.parse_envelope(raw)
+                    inp = _data_to_member(data)
+                    st.session_state.member_input = inp
+                    st.session_state.member_name = sfem.get("name", inp.name)
+                    _sync_widget_keys(st.session_state.member_input)
+                    st.success(f"Loaded: {inp.name}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to load: {e}")
 
-        # Save
-        inp = st.session_state.member_input
-        name = st.session_state.get("member_name", inp.name)
-        filename = f"{(name or 'member').replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.buckling.json"
-        st.download_button(
-            "Save Member",
-            data=_model_to_json(inp, name),
-            file_name=filename,
-            mime="application/json",
-            use_container_width=True,
-        )
+        # Import Section (from exchange) — simple button list
+        with st.expander("Import Section"):
+            exchange_sections = _load_exchange_sections()
+            if exchange_sections:
+                for idx, sec in enumerate(exchange_sections):
+                    if st.button(sec["name"], key=f"imp_{idx}",
+                                 use_container_width=True):
+                        props = sec["data"].get("properties", sec["data"])
+                        current = st.session_state.member_input
+                        st.session_state.member_input = MemberInput(
+                            name=sec["name"],
+                            N_Ed_kN=current.N_Ed_kN,
+                            A_mm2=props["A_mm2"],
+                            Iy_mm4=props["Iy_mm4"],
+                            Iz_mm4=props["Iz_mm4"],
+                            fy_MPa=current.fy_MPa,
+                            E_MPa=current.E_MPa,
+                            L_m=current.L_m,
+                            mu_y=current.mu_y,
+                            mu_z=current.mu_z,
+                            curve_y=current.curve_y,
+                            curve_z=current.curve_z,
+                            gamma_M0=current.gamma_M0,
+                            gamma_M1=current.gamma_M1,
+                        )
+                        st.session_state.member_name = sec["name"]
+                        _sync_widget_keys(st.session_state.member_input)
+                        st.rerun()
+            else:
+                st.caption("No sections in exchange/.")
 
         # Templates
         with st.expander("Templates"):
-            templates = _load_template_list()
+            templates = file_io.load_template_list()
             if templates:
                 for idx, tpl in enumerate(templates):
                     if st.button(tpl["name"], key=f"tpl_{idx}", use_container_width=True):
-                        raw = json.loads(tpl["path"].read_text(encoding="utf-8"))
-                        st.session_state.member_input = _json_to_member(raw)
+                        _sfem, _data, _ = file_io.load_template(tpl["path"])
+                        st.session_state.member_input = _data_to_member(_data)
                         st.session_state.member_name = tpl["name"]
                         _sync_widget_keys(st.session_state.member_input)
                         st.rerun()
             else:
                 st.caption("No templates found.")
 
-    # (a2) Import from Exchange
-    with st.popover("Import Section", use_container_width=True):
-        exchange_sections = _load_exchange_sections()
-        if exchange_sections:
-            section_names = [s["name"] for s in exchange_sections]
-            selected_section = st.selectbox(
-                "Available sections",
-                section_names,
-                index=None,
-                placeholder="Select section...",
-                key="exchange_section_select",
-            )
-            if st.button("Import", key="import_exchange") and selected_section:
-                sec = next(s for s in exchange_sections if s["name"] == selected_section)
-                props = sec["data"]["properties"]
-                current = st.session_state.member_input
-                st.session_state.member_input = MemberInput(
-                    name=sec["name"],
-                    N_Ed_kN=current.N_Ed_kN,
-                    A_mm2=props["A_mm2"],
-                    Iy_mm4=props["Iy_mm4"],
-                    Iz_mm4=props["Iz_mm4"],
-                    fy_MPa=current.fy_MPa,
-                    E_MPa=current.E_MPa,
-                    L_m=current.L_m,
-                    mu_y=current.mu_y,
-                    mu_z=current.mu_z,
-                    curve_y=current.curve_y,
-                    curve_z=current.curve_z,
-                    gamma_M0=current.gamma_M0,
-                    gamma_M1=current.gamma_M1,
-                )
-                st.session_state.member_name = sec["name"]
-                _sync_widget_keys(st.session_state.member_input)
-                st.success(f"Imported: {sec['name']}")
-                st.rerun()
-        else:
-            st.caption("No sections in exchange/sections/.")
-            st.caption("Use section_app to export results.")
+        st.markdown("---")
 
-    # (b) Presets
-    st.divider()
-    st.header("Presets")
-    preset_names = [p["name"] for p in PRESETS]
-    for idx, preset in enumerate(PRESETS):
-        if st.button(preset["name"], key=f"preset_{idx}", use_container_width=True):
-            st.session_state.member_input = preset["builder"]()
-            st.session_state.member_name = preset["name"]
-            _sync_widget_keys(st.session_state.member_input)
-            st.rerun()
+        # ── Save ──
+        st.caption("Save")
+        inp = st.session_state.member_input
+        name = st.session_state.get("member_name", inp.name)
+        model_data = _member_to_data(inp)
+        envelope = file_io.make_model_envelope(name or "member", model_data)
+
+        # Save Template
+        if st.button("Save Template", use_container_width=True,
+                      help="Save member to templates for reuse"):
+            if not name.strip():
+                st.error("Enter a member name first.")
+            else:
+                try:
+                    path = file_io.save_template(envelope, name)
+                    st.success(f"Saved template: {path.name}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
+        # Save Case (to saves/ folder)
+        if st.button("Save Case", use_container_width=True,
+                      help="Save case file to saves/ folder"):
+            if not name.strip():
+                st.error("Enter a member name first.")
+            else:
+                try:
+                    path = file_io.save_case(envelope, name)
+                    st.success(f"Saved: {path.name}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
+    # Member name
+    st.session_state.member_name = st.text_input(
+        "Member name",
+        value=st.session_state.get("member_name", ""),
+        label_visibility="collapsed",
+        placeholder="Member name",
+    )
 
     st.divider()
 
-    # (c) Display toggles
+    # Display toggles
     st.header("Display")
     st.session_state.show_all_curves = st.checkbox(
         "Show all buckling curves",

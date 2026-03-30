@@ -29,14 +29,31 @@ fem_app/
 ├── app.py           # Streamlit frontend (port 8501)
 ├── api.py           # FastAPI REST API (port 8502)
 ├── solver.py        # anastruct wrapper — single source of truth
-├── presets.py       # 6 preset model definitions
+├── file_io.py       # File I/O: templates, saves, exchange, SFEM envelope
 ├── library.py       # Material & section library loader
 ├── solve_file.py    # CLI file-based solver
 ├── library/         # JSON data: materials, HEA/HEB/IPE sections
-├── templates/       # .fem.yaml template files
+├── templates/       # .fem.yaml template files (shipped examples)
+├── saves/           # User-saved model files
+├── settings.json    # User-default display settings
 ├── tests/           # pytest test suite
 └── BUILD_SPEC.md    # Original detailed build specification (reference)
 ```
+
+## Display Settings
+
+Settings are saved two ways:
+- **System defaults** in `settings.json` — apply to all new models
+- **Per-model** in `display_settings` block of saved `.fem.yaml` files
+
+Key settings: `canvas_height`, `support_scale`, `label_scale`, `label_offset_scale`,
+`diagram_label_inset`, `diagram_label_offset`, `arrow_scale`, `hinge_size`,
+`line_thickness_scale`, `diagram_scale_M/V/N`, `deform_scale`, `canvas_dark_mode`.
+
+## .struct Import
+
+`solver.py` contains `struct_to_model()` which parses BMP teaching software `.struct`
+files. Unit conversions: m²→cm² (×1e4), m⁴→cm⁴ (×1e8), kPa→GPa (÷1e6).
 
 ## Testing
 

@@ -1,36 +1,43 @@
 {
-  "metadata": {
+  "sfem": {
+    "module": "section_app",
+    "format": "section",
+    "type": "model",
+    "format_version": 1,
+    "created": "",
     "name": "HQ beam",
-    "format_version": 1
+    "description": ""
   },
-  "parts": [
-    {
-      "name": "Bottom flange",
-      "b": 400.0,
-      "h": 20.0,
-      "y_bot": 0.0,
-      "z_left": 0.0
-    },
-    {
-      "name": "Left web",
-      "b": 10.0,
-      "h": 300.0,
-      "y_bot": 20.0,
-      "z_left": 100.0
-    },
-    {
-      "name": "Right web",
-      "b": 10.0,
-      "h": 300.0,
-      "y_bot": 20.0,
-      "z_left": 290.0
-    },
-    {
-      "name": "Top flange",
-      "b": 190.0,
-      "h": 40.0,
-      "y_bot": 320.0,
-      "z_left": 105.0
-    }
-  ]
+  "data": {
+    "parts": [
+      {
+        "name": "Bottom flange",
+        "b": 400.0,
+        "h": 20.0,
+        "y_bot": 0.0,
+        "z_left": 0.0
+      },
+      {
+        "name": "Left web",
+        "b": 10.0,
+        "h": 300.0,
+        "y_bot": 20.0,
+        "z_left": 100.0
+      },
+      {
+        "name": "Right web",
+        "b": 10.0,
+        "h": 300.0,
+        "y_bot": 20.0,
+        "z_left": 290.0
+      },
+      {
+        "name": "Top flange",
+        "b": 190.0,
+        "h": 40.0,
+        "y_bot": 320.0,
+        "z_left": 105.0
+      }
+    ]
+  }
 }

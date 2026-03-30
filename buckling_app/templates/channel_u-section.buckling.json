@@ -1,0 +1,29 @@
+{
+  "sfem": {
+    "module": "buckling_app",
+    "format": "buckling",
+    "type": "model",
+    "format_version": 1,
+    "created": "2026-03-25T13:16:27",
+    "name": "Channel (U-section)",
+    "description": ""
+  },
+  "data": {
+    "member": {
+      "name": "Channel (U-section)",
+      "N_Ed_kN": -40.4,
+      "A_mm2": 3208.0,
+      "Iy_mm4": 19560917.33,
+      "Iz_mm4": 1737864.82,
+      "fy_MPa": 355.0,
+      "E_MPa": 200000.0,
+      "L_m": 1.35,
+      "mu_y": 1.0,
+      "mu_z": 1.0,
+      "curve_y": "c",
+      "curve_z": "c",
+      "gamma_M0": 1.0,
+      "gamma_M1": 1.0
+    }
+  }
+}

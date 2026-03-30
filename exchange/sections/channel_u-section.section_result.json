@@ -1,0 +1,20 @@
+{
+  "sfem": {
+    "module": "section_app",
+    "format": "section_result",
+    "type": "result",
+    "format_version": 1,
+    "created": "2026-03-25T13:15:07",
+    "name": "Channel (U-section)",
+    "description": ""
+  },
+  "data": {
+    "A_mm2": 3208.0,
+    "Iy_mm4": 19560917.33,
+    "Iz_mm4": 1737864.82,
+    "iy_mm": 78.09,
+    "iz_mm": 23.28,
+    "Wy_mm3": 195609.17,
+    "Wz_mm3": 33290.36
+  }
+}

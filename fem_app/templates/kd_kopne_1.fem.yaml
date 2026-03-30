@@ -1,0 +1,177 @@
+sfem:
+  module: fem_app
+  format: fem
+  type: model
+  format_version: 2
+  created: '2026-03-30T21:43:51'
+  name: KD kopne 1
+  description: ''
+data:
+  format_version: 2
+  structure_type: frame
+  mesh_size: 50
+  materials:
+  - id: 1
+    name: Material 1
+    E_GPa: 210.0
+  cross_sections:
+  - id: 1
+    name: Section 1
+    A_cm2: 28.5
+    Iz_cm4: 1942.9999999999998
+    material_id: 1
+  nodes:
+  - id: 1
+    x: 0.0
+    y: 0.0
+  - id: 2
+    x: 3.0
+    y: 1.0
+  - id: 3
+    x: 6.0
+    y: 0.0
+  - id: 4
+    x: 3.0
+    y: 0.0
+  - id: 5
+    x: 1.5
+    y: 0.5
+  - id: 6
+    x: 4.5
+    y: 0.5
+  - id: 7
+    x: 1.5
+    y: 0.0
+  - id: 8
+    x: 4.5
+    y: 0.0
+  members:
+  - id: 1
+    start_node: 1
+    end_node: 7
+    section_id: 1
+  - id: 2
+    start_node: 1
+    end_node: 5
+    section_id: 1
+  - id: 3
+    start_node: 5
+    end_node: 6
+    section_id: 1
+  - id: 4
+    start_node: 2
+    end_node: 5
+    section_id: 1
+  - id: 5
+    start_node: 7
+    end_node: 4
+    section_id: 1
+  - id: 6
+    start_node: 2
+    end_node: 6
+    section_id: 1
+  - id: 7
+    start_node: 4
+    end_node: 8
+    section_id: 1
+  - id: 8
+    start_node: 3
+    end_node: 8
+    section_id: 1
+  - id: 9
+    start_node: 6
+    end_node: 3
+    section_id: 1
+  - id: 10
+    start_node: 5
+    end_node: 7
+    section_id: 1
+  - id: 11
+    start_node: 6
+    end_node: 8
+    section_id: 1
+  - id: 12
+    start_node: 4
+    end_node: 5
+    section_id: 1
+  - id: 13
+    start_node: 4
+    end_node: 6
+    section_id: 1
+  supports:
+  - node_id: 1
+    type: pinned
+    spring_stiffness: null
+  - node_id: 3
+    type: roller_x
+    spring_stiffness: null
+  loads:
+  - id: 1
+    type: point_force
+    node_or_member_id: 1
+    direction: Fy
+    magnitude: -7.5
+    udl_start: null
+    udl_end: null
+  - id: 2
+    type: point_force
+    node_or_member_id: 3
+    direction: Fy
+    magnitude: -7.5
+    udl_start: null
+    udl_end: null
+  - id: 3
+    type: point_force
+    node_or_member_id: 2
+    direction: Fy
+    magnitude: -15.0
+    udl_start: null
+    udl_end: null
+  - id: 4
+    type: point_force
+    node_or_member_id: 5
+    direction: Fy
+    magnitude: -15.0
+    udl_start: null
+    udl_end: null
+  - id: 5
+    type: point_force
+    node_or_member_id: 6
+    direction: Fy
+    magnitude: -15.0
+    udl_start: null
+    udl_end: null
+  hinges:
+  - member_id: 1
+    start_release: false
+    end_release: true
+  - member_id: 2
+    start_release: true
+    end_release: true
+  - member_id: 3
+    start_release: true
+    end_release: true
+  - member_id: 4
+    start_release: true
+    end_release: true
+  - member_id: 5
+    start_release: true
+    end_release: false
+  - member_id: 6
+    start_release: false
+    end_release: true
+  - member_id: 7
+    start_release: true
+    end_release: true
+  - member_id: 8
+    start_release: false
+    end_release: true
+  - member_id: 9
+    start_release: true
+    end_release: true
+  - member_id: 12
+    start_release: true
+    end_release: true
+  - member_id: 13
+    start_release: true
+    end_release: true

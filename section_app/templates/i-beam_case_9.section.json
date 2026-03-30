@@ -1,0 +1,36 @@
+{
+  "sfem": {
+    "module": "section_app",
+    "format": "section",
+    "type": "model",
+    "format_version": 1,
+    "created": "2026-03-24T13:40:01",
+    "name": "I-beam case 9",
+    "description": ""
+  },
+  "data": {
+    "parts": [
+      {
+        "name": "Bottom flange",
+        "b": 500.0,
+        "h": 60.0,
+        "y_bot": 0.0,
+        "z_left": 0.0
+      },
+      {
+        "name": "Web",
+        "b": 40.0,
+        "h": 160.0,
+        "y_bot": 60.0,
+        "z_left": 230.0
+      },
+      {
+        "name": "Top flange",
+        "b": 200.0,
+        "h": 20.0,
+        "y_bot": 220.0,
+        "z_left": 150.0
+      }
+    ]
+  }
+}

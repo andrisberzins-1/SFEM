@@ -1,0 +1,20 @@
+{
+  "sfem": {
+    "module": "section_app",
+    "format": "section_result",
+    "type": "result",
+    "format_version": 1,
+    "created": "2026-03-24T13:42:13",
+    "name": "I-beam case 10",
+    "description": ""
+  },
+  "data": {
+    "A_mm2": 42000.0,
+    "Iy_mm4": 1829550000.0,
+    "Iz_mm4": 236000000.0,
+    "iy_mm": 208.71,
+    "iz_mm": 74.96,
+    "Wy_mm3": 5303043.48,
+    "Wz_mm3": 1180000.0
+  }
+}

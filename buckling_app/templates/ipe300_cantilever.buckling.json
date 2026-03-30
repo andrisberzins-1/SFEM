@@ -1,0 +1,29 @@
+{
+  "sfem": {
+    "module": "buckling_app",
+    "format": "buckling",
+    "type": "model",
+    "format_version": 1,
+    "created": "2026-03-23T12:11:19",
+    "name": "IPE 300 cantilever, S275, L=3m",
+    "description": ""
+  },
+  "data": {
+    "member": {
+      "name": "IPE 300",
+      "N_Ed_kN": -150.0,
+      "A_mm2": 5381.0,
+      "Iy_mm4": 83560000.0,
+      "Iz_mm4": 6038000.0,
+      "fy_MPa": 275.0,
+      "E_MPa": 200000.0,
+      "L_m": 3.0,
+      "mu_y": 2.0,
+      "mu_z": 2.0,
+      "curve_y": "a",
+      "curve_z": "b",
+      "gamma_M0": 1.0,
+      "gamma_M1": 1.0
+    }
+  }
+}

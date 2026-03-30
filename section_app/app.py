@@ -30,9 +30,7 @@ from section_solver import (
     MM4_TO_CM4,
     MM3_TO_CM3,
 )
-from presets import PRESETS
-
-TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
+import file_io
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -161,6 +159,11 @@ st.title(f"{APP_ICON} {APP_TITLE}")
 def _get_conv() -> dict:
     """Get current axis convention config."""
     return AXIS_CONVENTIONS[st.session_state.axis_convention]
+
+
+def _fmt(v: float) -> str:
+    """Format dimension: 1 decimal if fractional, integer otherwise."""
+    return f"{v:.1f}" if v % 1 else f"{v:.0f}"
 
 
 def _sub(text: str) -> str:
@@ -578,84 +581,42 @@ def _auto_assign_snap_ids(snaps_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Template I/O
+# Template / file I/O helpers
 # ---------------------------------------------------------------------------
 
-def _load_template_list() -> list[dict]:
-    """Scan templates/ for .section.json files and return [{name, path}, ...]."""
-    if not TEMPLATES_DIR.is_dir():
-        return []
-    templates = []
-    for fp in sorted(TEMPLATES_DIR.glob("*.section.json")):
-        try:
-            raw = json.loads(fp.read_text(encoding="utf-8"))
-            name = raw.get("metadata", {}).get("name", fp.stem.replace("_", " "))
-        except Exception:
-            name = fp.stem.replace("_", " ")
-        templates.append({"name": name, "path": fp})
-    return templates
-
-
-def _load_template_file(path: pathlib.Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load a .section.json file and return (rects_df, snaps_df, joints_df)."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    parts_data = raw.get("parts", [])
-    parts = [
+def _load_parts_from_data(data: dict) -> list[RectanglePart]:
+    """Convert envelope ``data`` dict to a list of RectanglePart."""
+    return [
         RectanglePart(
             name=p["name"], b=p["b"], h=p["h"],
             y_bot=p["y_bot"], z_left=p["z_left"],
         )
-        for p in parts_data
+        for p in data.get("parts", [])
     ]
-    return _parts_to_tables(parts)
 
 
-def _section_to_json(rects_df: pd.DataFrame,
-                     snaps_df: pd.DataFrame,
-                     joints_df: pd.DataFrame,
-                     name: str = "",
-                     ) -> str:
-    """Serialize current section state to JSON string for saving."""
-    # Resolve positions to get absolute part coordinates
+def _section_to_model_data(
+    rects_df: pd.DataFrame,
+    snaps_df: pd.DataFrame,
+    joints_df: pd.DataFrame,
+) -> dict:
+    """Resolve current section and return the ``data`` dict for the envelope."""
     resolved = _resolve_positions(rects_df, snaps_df, joints_df)
-    if isinstance(resolved, str):
-        # Resolution failed — fall back to storing without coordinates
-        parts_data = []
-        for _, row in rects_df.iterrows():
-            parts_data.append({
-                "name": str(row["Name"]) if pd.notna(row["Name"]) else "",
-                "b": float(row["b"]),
-                "h": float(row["h"]),
-                "y_bot": 0.0,
-                "z_left": 0.0,
-            })
-    else:
-        parts_data = []
-        for _, row in rects_df.iterrows():
-            rname = str(row["Name"]) if pd.notna(row["Name"]) else ""
+    parts_data = []
+    for _, row in rects_df.iterrows():
+        rname = str(row["Name"]) if pd.notna(row["Name"]) else ""
+        if isinstance(resolved, dict):
             y_bot, z_left = resolved.get(rname, (0.0, 0.0))
-            parts_data.append({
-                "name": rname,
-                "b": float(row["b"]),
-                "h": float(row["h"]),
-                "y_bot": y_bot,
-                "z_left": z_left,
-            })
-
-    data = {
-        "metadata": {
-            "name": name,
-            "format_version": 1,
-            "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        },
-        "parts": parts_data,
-    }
-    return json.dumps(data, indent=2)
-
-
-def _load_section_tables(name: str = "") -> None:
-    """Helper to load data into session state and rerun."""
-    _clear_editor_keys()
+        else:
+            y_bot, z_left = 0.0, 0.0
+        parts_data.append({
+            "name": rname,
+            "b": float(row["b"]),
+            "h": float(row["h"]),
+            "y_bot": y_bot,
+            "z_left": z_left,
+        })
+    return {"parts": parts_data}
 
 
 def _clear_editor_keys() -> None:
@@ -669,8 +630,15 @@ def _clear_editor_keys() -> None:
 # ---------------------------------------------------------------------------
 
 if "rects_df" not in st.session_state:
-    default_parts = PRESETS[0]["builder"]()
-    r, s, j = _parts_to_tables(default_parts)
+    # Load first template as default (I-beam)
+    _tpls = file_io.load_template_list()
+    if _tpls:
+        _sfem, _data, _ = file_io.load_template(_tpls[0]["path"])
+        _default_parts = _load_parts_from_data(_data)
+    else:
+        _default_parts = [RectanglePart(name="Part 1", b=100.0, h=100.0,
+                                        y_bot=0.0, z_left=0.0)]
+    r, s, j = _parts_to_tables(_default_parts)
     st.session_state.rects_df = r
     st.session_state.snaps_df = s
     st.session_state.joints_df = j
@@ -692,12 +660,13 @@ if "show_principal_axes" not in st.session_state:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    # --- File menu (popover, matching fem_app pattern) ---
-    with st.popover("File", use_container_width=True):
-        # New Section
+    # --- File section ---
+    with st.expander("File", expanded=False):
+        # ── New ──
         if st.button("New Section", use_container_width=True):
-            default_parts = PRESETS[-1]["builder"]()  # "Custom" preset
-            r, s, j = _parts_to_tables(default_parts)
+            custom_parts = [RectanglePart(name="Part 1", b=100.0, h=100.0,
+                                          y_bot=0.0, z_left=0.0)]
+            r, s, j = _parts_to_tables(custom_parts)
             st.session_state.rects_df = r
             st.session_state.snaps_df = s
             st.session_state.joints_df = j
@@ -705,101 +674,63 @@ with st.sidebar:
             _clear_editor_keys()
             st.rerun()
 
-        # Load Section (file uploader)
+        st.markdown("---")
+
+        # ── Load ──
+        st.caption("Load")
+        # Compact file uploader (button-only, no dropzone)
+        st.markdown(
+            "<style>"
+            "[data-testid='stFileUploaderDropzone'] > div {"
+            "  display: none !important;}"
+            "[data-testid='stFileUploaderDropzone'] {"
+            "  border: none !important;"
+            "  padding: 0 !important;"
+            "  min-height: 0 !important;}"
+            "[data-testid='stFileUploaderDropzone'] span {"
+            "  width: 100%;}"
+            "[data-testid='stFileUploaderDropzone'] span button {"
+            "  width: 100%;"
+            "  border-radius: 0.5rem;}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
         uploaded = st.file_uploader(
-            "Load Section",
+            "Browse",
             type=["json", "section.json"],
             key="section_uploader",
             label_visibility="collapsed",
         )
         if uploaded is not None:
-            try:
-                raw = json.loads(uploaded.read().decode("utf-8"))
-                parts_data = raw.get("parts", [])
-                parts = [
-                    RectanglePart(
-                        name=p["name"], b=p["b"], h=p["h"],
-                        y_bot=p["y_bot"], z_left=p["z_left"],
-                    )
-                    for p in parts_data
-                ]
-                r, s, j = _parts_to_tables(parts)
-                st.session_state.rects_df = r
-                st.session_state.snaps_df = s
-                st.session_state.joints_df = j
-                name = raw.get("metadata", {}).get("name", "")
-                st.session_state.section_name = name
-                _clear_editor_keys()
-                st.success(f"Loaded: {name}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to load: {e}")
-
-        # Save as Template (geometry → templates/)
-        sec_name = st.session_state.get("section_name", "")
-        if st.button("Save as Template", use_container_width=True,
-                      help="Save section geometry to templates for reuse"):
-            if not sec_name.strip():
-                st.error("Enter a section name first.")
-            else:
+            fid = uploaded.file_id
+            if fid != st.session_state.get("_last_upload_id"):
+                st.session_state._last_upload_id = fid
                 try:
-                    json_str = _section_to_json(
-                        st.session_state.rects_df,
-                        st.session_state.snaps_df,
-                        st.session_state.joints_df,
-                        name=sec_name,
-                    )
-                    tpl_dir = pathlib.Path(__file__).resolve().parent / "templates"
-                    tpl_dir.mkdir(exist_ok=True)
-                    fname = f"{sec_name.replace(' ', '_').lower()}.section.json"
-                    (tpl_dir / fname).write_text(json_str, encoding="utf-8")
-                    st.success(f"Saved template: {fname}")
+                    raw = file_io.deserialize(uploaded.read().decode("utf-8"))
+                    sfem, data, _ = file_io.parse_envelope(raw)
+                    parts = _load_parts_from_data(data)
+                    r, s, j = _parts_to_tables(parts)
+                    st.session_state.rects_df = r
+                    st.session_state.snaps_df = s
+                    st.session_state.joints_df = j
+                    name = sfem.get("name", "")
+                    st.session_state.section_name = name
+                    _clear_editor_keys()
+                    st.success(f"Loaded: {name}")
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Save failed: {e}")
+                    st.error(f"Failed to load: {e}")
 
-        # Save Results (calculated properties → exchange/sections/)
-        if st.button("Save Results", use_container_width=True,
-                      help="Export calculated properties for use in other modules"):
-            cached_result = st.session_state.get("_last_result")
-            if cached_result is None:
-                st.error("No calculation results yet. Define a valid section first.")
-            elif not sec_name.strip():
-                st.error("Enter a section name first.")
-            else:
-                try:
-                    exchange_dir = pathlib.Path(__file__).resolve().parent.parent / "exchange" / "sections"
-                    exchange_dir.mkdir(parents=True, exist_ok=True)
-                    exchange_data = {
-                        "format_version": 1,
-                        "source": "section_app",
-                        "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                        "name": sec_name,
-                        "properties": {
-                            "A_mm2": round(cached_result.A_total, 2),
-                            "Iy_mm4": round(cached_result.Iy, 2),
-                            "Iz_mm4": round(cached_result.Iz, 2),
-                            "iy_mm": round(cached_result.iy, 2),
-                            "iz_mm": round(cached_result.iz, 2),
-                            "Wy_mm3": round(cached_result.Wy, 2),
-                            "Wz_mm3": round(cached_result.Wz, 2),
-                        },
-                    }
-                    fname = f"{sec_name.replace(' ', '_')}.section_result.json"
-                    (exchange_dir / fname).write_text(
-                        json.dumps(exchange_data, indent=2), encoding="utf-8",
-                    )
-                    st.success(f"Saved to exchange/sections/{fname}")
-                except Exception as e:
-                    st.error(f"Save failed: {e}")
-
-        # Templates (built-in presets)
+        # Templates
         with st.expander("Templates"):
-            templates = _load_template_list()
+            templates = file_io.load_template_list()
             if templates:
                 for idx, tpl in enumerate(templates):
                     if st.button(tpl["name"], key=f"tpl_{idx}",
                                  use_container_width=True):
-                        r, s, j = _load_template_file(tpl["path"])
+                        _sfem, _data, _ = file_io.load_template(tpl["path"])
+                        parts = _load_parts_from_data(_data)
+                        r, s, j = _parts_to_tables(parts)
                         st.session_state.rects_df = r
                         st.session_state.snaps_df = s
                         st.session_state.joints_df = j
@@ -808,6 +739,67 @@ with st.sidebar:
                         st.rerun()
             else:
                 st.caption("No templates found.")
+
+        st.markdown("---")
+
+        # ── Save ──
+        st.caption("Save")
+        sec_name = st.session_state.get("section_name", "")
+        model_data = _section_to_model_data(
+            st.session_state.rects_df,
+            st.session_state.snaps_df,
+            st.session_state.joints_df,
+        )
+        envelope = file_io.make_model_envelope(sec_name or "section", model_data)
+
+        # Save as Template
+        if st.button("Save Template", use_container_width=True,
+                      help="Save section geometry to templates for reuse"):
+            if not sec_name.strip():
+                st.error("Enter a section name first.")
+            else:
+                try:
+                    path = file_io.save_template(envelope, sec_name)
+                    st.success(f"Saved template: {path.name}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
+        # Save Case (to saves/ folder)
+        if st.button("Save Case", use_container_width=True,
+                      help="Save case file to saves/ folder"):
+            if not sec_name.strip():
+                st.error("Enter a section name first.")
+            else:
+                try:
+                    path = file_io.save_case(envelope, sec_name)
+                    st.success(f"Saved: {path.name}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
+        # Export Results
+        if st.button("Export Results", use_container_width=True,
+                      help="Export calculated properties for use in other modules"):
+            cached_result = st.session_state.get("_last_result")
+            if cached_result is None:
+                st.error("No calculation results yet. Define a valid section first.")
+            elif not sec_name.strip():
+                st.error("Enter a section name first.")
+            else:
+                try:
+                    result_data = {
+                        "A_mm2": round(cached_result.A_total, 2),
+                        "Iy_mm4": round(cached_result.Iy, 2),
+                        "Iz_mm4": round(cached_result.Iz, 2),
+                        "iy_mm": round(cached_result.iy, 2),
+                        "iz_mm": round(cached_result.iz, 2),
+                        "Wy_mm3": round(cached_result.Wy, 2),
+                        "Wz_mm3": round(cached_result.Wz, 2),
+                    }
+                    result_env = file_io.make_result_envelope(sec_name, result_data)
+                    path = file_io.save_to_exchange(result_env, sec_name)
+                    st.success(f"Saved to {path.relative_to(path.parent.parent.parent)}")
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
 
     # Section name
     st.session_state.section_name = st.text_input(
@@ -1480,7 +1472,7 @@ if result is not None and error_msg is None:
 
     # --- Area ---
     st.markdown("**Area**")
-    area_parts = " + ".join(f"{pr.b:.0f} \\cdot {pr.h:.0f}" for pr in result.parts)
+    area_parts = " + ".join(f"{_fmt(pr.b)} \\cdot {_fmt(pr.h)}" for pr in result.parts)
     area_values = " + ".join(f"{pr.A:.0f}" for pr in result.parts)
     st.latex(
         r"A = \sum b_i \cdot h_i = " + area_parts
@@ -1492,7 +1484,7 @@ if result is not None and error_msg is None:
     # --- Centroid (vertical axis) ---
     st.markdown(f"**Centroid {v_ax}<sub>C</sub>**", unsafe_allow_html=True)
     num_y = " + ".join(
-        f"({pr.b:.0f} \\cdot {pr.h:.0f}) \\cdot {pr.yc:.1f}"
+        f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)}) \\cdot {pr.yc:.1f}"
         for pr in result.parts
     )
     st.latex(
@@ -1504,7 +1496,7 @@ if result is not None and error_msg is None:
 
     st.markdown(f"**Centroid {h_ax}<sub>C</sub>**", unsafe_allow_html=True)
     num_z = " + ".join(
-        f"({pr.b:.0f} \\cdot {pr.h:.0f}) \\cdot {pr.zc:.1f}"
+        f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)}) \\cdot {pr.zc:.1f}"
         for pr in result.parts
     )
     st.latex(
@@ -1527,8 +1519,8 @@ if result is not None and error_msg is None:
         st.latex(
             r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
             r"I_" + v_ax + r" = \frac{"
-            + f"{pr.b:.0f} \\cdot {pr.h:.0f}^3" + r"}{12} + "
-            + f"({pr.b:.0f} \\cdot {pr.h:.0f})"
+            + f"{_fmt(pr.b)} \\cdot {_fmt(pr.h)}^3" + r"}{12} + "
+            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
             + r" \cdot "
             + f"({pr.yc:.1f} - {result.yc:.2f})^2"
             + r" = " + f"{pr.Iy_local:,.0f}" + r" + " + f"{pr.Iy_steiner:,.0f}"
@@ -1553,8 +1545,8 @@ if result is not None and error_msg is None:
         st.latex(
             r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
             r"I_" + h_ax + r" = \frac{"
-            + f"{pr.h:.0f} \\cdot {pr.b:.0f}^3" + r"}{12} + "
-            + f"({pr.b:.0f} \\cdot {pr.h:.0f})"
+            + f"{_fmt(pr.h)} \\cdot {_fmt(pr.b)}^3" + r"}{12} + "
+            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
             + r" \cdot "
             + f"({pr.zc:.1f} - {result.zc:.2f})^2"
             + r" = " + f"{pr.Iz_local:,.0f}" + r" + " + f"{pr.Iz_steiner:,.0f}"
@@ -1582,7 +1574,7 @@ if result is not None and error_msg is None:
     for pr in result.parts:
         st.latex(
             r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
-            + f"({pr.b:.0f} \\cdot {pr.h:.0f})"
+            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
             + r" \cdot "
             + f"({pr.yc:.1f} - {result.yc:.2f})"
             + r" \cdot "

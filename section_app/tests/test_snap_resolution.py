@@ -183,25 +183,43 @@ class TestPresetRoundTrip:
             assert res.y_bot == pytest.approx(orig.y_bot)
             assert res.z_left == pytest.approx(orig.z_left)
 
+    def _load_template_parts(self, template_name: str):
+        """Load parts from a template file by searching for a matching name."""
+        import json
+        import pathlib
+        templates_dir = pathlib.Path(__file__).parent.parent / "templates"
+        for fp in templates_dir.glob("*.section.json"):
+            raw = json.loads(fp.read_text(encoding="utf-8"))
+            # Support both new envelope and old format
+            if "sfem" in raw:
+                name = raw["sfem"].get("name", "")
+                parts_list = raw.get("data", {}).get("parts", [])
+            else:
+                name = raw.get("metadata", {}).get("name", "")
+                parts_list = raw.get("parts", [])
+            if template_name.lower() in name.lower() or template_name.lower() in fp.stem:
+                from section_solver import RectanglePart
+                return [
+                    RectanglePart(name=p["name"], b=p["b"], h=p["h"],
+                                  y_bot=p["y_bot"], z_left=p["z_left"])
+                    for p in parts_list
+                ]
+        raise FileNotFoundError(f"Template '{template_name}' not found")
+
     def test_i_beam(self):
-        from presets import preset_i_beam
-        self._roundtrip(preset_i_beam())
+        self._roundtrip(self._load_template_parts("i_beam"))
 
     def test_t_section(self):
-        from presets import preset_t_section
-        self._roundtrip(preset_t_section())
+        self._roundtrip(self._load_template_parts("t_section"))
 
     def test_l_section(self):
-        from presets import preset_l_section
-        self._roundtrip(preset_l_section())
+        self._roundtrip(self._load_template_parts("l_section"))
 
     def test_channel(self):
-        from presets import preset_channel
-        self._roundtrip(preset_channel())
+        self._roundtrip(self._load_template_parts("channel"))
 
     def test_box_section(self):
-        from presets import preset_box_section
-        self._roundtrip(preset_box_section())
+        self._roundtrip(self._load_template_parts("box_section"))
 
 
 # ---------------------------------------------------------------------------

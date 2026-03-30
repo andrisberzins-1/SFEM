@@ -1,0 +1,29 @@
+{
+  "sfem": {
+    "module": "buckling_app",
+    "format": "buckling",
+    "type": "model",
+    "format_version": 1,
+    "created": "2026-03-24T13:58:19",
+    "name": "I-beam case 1",
+    "description": ""
+  },
+  "data": {
+    "member": {
+      "name": "I-beam case 1",
+      "N_Ed_kN": -2000.0,
+      "A_mm2": 17000.0,
+      "Iy_mm4": 160741666.67,
+      "Iz_mm4": 80966666.67,
+      "fy_MPa": 235.0,
+      "E_MPa": 200000.0,
+      "L_m": 10.0,
+      "mu_y": 0.5,
+      "mu_z": 0.5,
+      "curve_y": "d",
+      "curve_z": "d",
+      "gamma_M0": 1.0,
+      "gamma_M1": 1.0
+    }
+  }
+}

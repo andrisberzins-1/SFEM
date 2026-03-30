@@ -1,15 +1,22 @@
 {
-  "metadata": {
+  "sfem": {
+    "module": "section_app",
+    "format": "section",
+    "type": "model",
+    "format_version": 1,
+    "created": "",
     "name": "Custom",
-    "format_version": 1
+    "description": ""
   },
-  "parts": [
-    {
-      "name": "Part 1",
-      "b": 100.0,
-      "h": 100.0,
-      "y_bot": 0.0,
-      "z_left": 0.0
-    }
-  ]
+  "data": {
+    "parts": [
+      {
+        "name": "Part 1",
+        "b": 100.0,
+        "h": 100.0,
+        "y_bot": 0.0,
+        "z_left": 0.0
+      }
+    ]
+  }
 }

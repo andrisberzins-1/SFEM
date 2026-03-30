@@ -1,0 +1,20 @@
+{
+  "sfem": {
+    "module": "section_app",
+    "format": "section_result",
+    "type": "result",
+    "format_version": 1,
+    "created": "2026-03-24T16:05:10",
+    "name": "L-section (angle)",
+    "description": ""
+  },
+  "data": {
+    "A_mm2": 1900.0,
+    "Iy_mm4": 1800043.86,
+    "Iz_mm4": 1800043.86,
+    "iy_mm": 30.78,
+    "iz_mm": 30.78,
+    "Wy_mm3": 25240.47,
+    "Wz_mm3": 25240.47
+  }
+}

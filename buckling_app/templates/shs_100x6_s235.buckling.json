@@ -1,0 +1,29 @@
+{
+  "sfem": {
+    "module": "buckling_app",
+    "format": "buckling",
+    "type": "model",
+    "format_version": 1,
+    "created": "2026-03-23T12:11:19",
+    "name": "SHS 100\u00d7100\u00d76, S235, L=6m (Lecture example)",
+    "description": ""
+  },
+  "data": {
+    "member": {
+      "name": "SHS 100x100x6",
+      "N_Ed_kN": -100.0,
+      "A_mm2": 2163.0,
+      "Iy_mm4": 3115000.0,
+      "Iz_mm4": 3115000.0,
+      "fy_MPa": 235.0,
+      "E_MPa": 200000.0,
+      "L_m": 6.0,
+      "mu_y": 1.0,
+      "mu_z": 1.0,
+      "curve_y": "c",
+      "curve_z": "c",
+      "gamma_M0": 1.0,
+      "gamma_M1": 1.0
+    }
+  }
+}

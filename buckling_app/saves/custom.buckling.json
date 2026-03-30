@@ -1,0 +1,29 @@
+{
+  "sfem": {
+    "module": "buckling_app",
+    "format": "buckling",
+    "type": "model",
+    "format_version": 1,
+    "created": "2026-03-23T13:22:23",
+    "name": "Custom",
+    "description": ""
+  },
+  "data": {
+    "member": {
+      "name": "Custom",
+      "N_Ed_kN": -100.0,
+      "A_mm2": 1000.0,
+      "Iy_mm4": 1000000.0,
+      "Iz_mm4": 1000000.0,
+      "fy_MPa": 235.0,
+      "E_MPa": 200000.0,
+      "L_m": 3.0,
+      "mu_y": 1.0,
+      "mu_z": 1.0,
+      "curve_y": "b",
+      "curve_z": "b",
+      "gamma_M0": 1.0,
+      "gamma_M1": 1.0
+    }
+  }
+}
