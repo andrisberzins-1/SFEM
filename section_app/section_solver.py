@@ -305,3 +305,509 @@ def calculate(parts: list[RectanglePart]) -> SectionResult:
         Wy=Wy,
         Wz=Wz,
     )
+
+
+# ---------------------------------------------------------------------------
+# Axis convention definitions (shared with app.py display)
+# ---------------------------------------------------------------------------
+
+AXIS_CONVENTIONS = {
+    "yz_eurocode": {
+        "horiz_axis": "y", "vert_axis": "z",
+        "I_vert": "I_y", "I_horiz": "I_z",
+        "W_vert": "W_y", "W_horiz": "W_z",
+        "i_vert": "i_y", "i_horiz": "i_z",
+        "Iyz_sub": "yz",
+    },
+    "xy_basic": {
+        "horiz_axis": "x", "vert_axis": "y",
+        "I_vert": "I_x", "I_horiz": "I_y",
+        "W_vert": "W_x", "W_horiz": "W_y",
+        "i_vert": "i_x", "i_horiz": "i_y",
+        "Iyz_sub": "xy",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# LaTeX step builder
+# ---------------------------------------------------------------------------
+
+def _fmt(v: float) -> str:
+    """Format dimension: 1 decimal if fractional, integer otherwise."""
+    return f"{v:.1f}" if v % 1 else f"{v:.0f}"
+
+
+def _sub(text: str) -> str:
+    """Format property label with HTML subscript: 'I_y' -> 'I<sub>y</sub>'."""
+    if "_" in text:
+        base, subscript = text.split("_", 1)
+        return f"{base}<sub>{subscript}</sub>"
+    return text
+
+
+def build_latex_steps(
+    result: SectionResult,
+    axis_convention: str = "yz_eurocode",
+) -> list[tuple[str, str]]:
+    """Build step-by-step LaTeX strings for section property calculation.
+
+    Returns a list of (heading, latex_expression) tuples.
+    Headings may contain HTML (subscripts). Empty heading means
+    continuation of the previous section (no new heading rendered).
+
+    Args:
+        result: Computed SectionResult from calculate().
+        axis_convention: "yz_eurocode" or "xy_basic".
+
+    Returns:
+        List of (heading_str, latex_str) tuples.
+    """
+    conv = AXIS_CONVENTIONS[axis_convention]
+    v_ax = conv["vert_axis"]
+    h_ax = conv["horiz_axis"]
+    Iyz_sub = conv["Iyz_sub"]
+    I_vert_label = conv["I_vert"]
+    I_horiz_label = conv["I_horiz"]
+    W_vert_label = conv["W_vert"]
+    W_horiz_label = conv["W_horiz"]
+
+    # Property subscripts for I, W, i formulas:
+    # Iy (about horizontal axis) → named after horizontal axis = h_ax
+    # Iz (about vertical axis)   → named after vertical axis  = v_ax
+    Iy_s = h_ax   # "y" for yz_eurocode, "x" for xy_basic
+    Iz_s = v_ax   # "z" for yz_eurocode, "y" for xy_basic
+
+    steps: list[tuple[str, str]] = []
+
+    # --- Area ---
+    area_parts = " + ".join(
+        f"{_fmt(pr.b)} \\cdot {_fmt(pr.h)}" for pr in result.parts
+    )
+    area_values = " + ".join(f"{pr.A:.0f}" for pr in result.parts)
+    steps.append((
+        "Area",
+        r"A = \sum b_i \cdot h_i = " + area_parts
+        + r" = " + area_values
+        + r" = " + f"{result.A_total:.0f}"
+        + r"\text{{ mm}}^2",
+    ))
+
+    # --- Centroid (vertical axis) ---
+    num_y = " + ".join(
+        f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)}) \\cdot {pr.yc:.1f}"
+        for pr in result.parts
+    )
+    steps.append((
+        f"Centroid {v_ax}<sub>C</sub>",
+        v_ax + r"_C = \frac{\sum A_i \cdot "
+        + v_ax + r"_{c,i}}{\sum A_i} = "
+        r"\frac{" + num_y + r"}{" + f"{result.A_total:.0f}" + r"}"
+        r" = " + f"{result.yc:.2f}" + r"\text{{ mm}}",
+    ))
+
+    # --- Centroid (horizontal axis) ---
+    num_z = " + ".join(
+        f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)}) \\cdot {pr.zc:.1f}"
+        for pr in result.parts
+    )
+    steps.append((
+        f"Centroid {h_ax}<sub>C</sub>",
+        h_ax + r"_C = \frac{\sum A_i \cdot "
+        + h_ax + r"_{c,i}}{\sum A_i} = "
+        r"\frac{" + num_z + r"}{" + f"{result.A_total:.0f}" + r"}"
+        r" = " + f"{result.zc:.2f}" + r"\text{{ mm}}",
+    ))
+
+    # --- Moment of inertia Iy (about horizontal axis) ---
+    steps.append((
+        f"{_sub(I_vert_label)} \u2014 Parallel axis theorem (Steiner)",
+        r"I_" + Iy_s + r" = \sum \left( I_{\text{local},i} + A_i \cdot d_i^2 \right)",
+    ))
+
+    for pr in result.parts:
+        steps.append((
+            "",
+            r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
+            r"I_" + Iy_s + r" = \frac{"
+            + f"{_fmt(pr.b)} \\cdot {_fmt(pr.h)}^3" + r"}{12} + "
+            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
+            + r" \cdot "
+            + f"({pr.yc:.1f} - {result.yc:.2f})^2"
+            + r" = " + f"{pr.Iy_local:,.0f}" + r" + " + f"{pr.Iy_steiner:,.0f}"
+            + r" = " + f"{pr.Iy_total:,.0f}" + r"\text{{ mm}}^4",
+        ))
+
+    Iy_sum = " + ".join(f"{pr.Iy_total:,.0f}" for pr in result.parts)
+    steps.append((
+        "",
+        r"I_" + Iy_s + r" = " + Iy_sum
+        + r" = " + f"{result.Iy:,.0f}" + r"\text{{ mm}}^4"
+        + r" = " + f"{result.Iy / 1e6:,.2f}" + r" \times 10^6 \text{{ mm}}^4"
+        + r" = " + f"{result.Iy * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4",
+    ))
+
+    # --- Moment of inertia Iz (about vertical axis) ---
+    steps.append((
+        f"{_sub(I_horiz_label)} \u2014 Parallel axis theorem (Steiner)",
+        "",  # heading-only, no formula on this line
+    ))
+
+    for pr in result.parts:
+        steps.append((
+            "",
+            r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
+            r"I_" + Iz_s + r" = \frac{"
+            + f"{_fmt(pr.h)} \\cdot {_fmt(pr.b)}^3" + r"}{12} + "
+            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
+            + r" \cdot "
+            + f"({pr.zc:.1f} - {result.zc:.2f})^2"
+            + r" = " + f"{pr.Iz_local:,.0f}" + r" + " + f"{pr.Iz_steiner:,.0f}"
+            + r" = " + f"{pr.Iz_total:,.0f}" + r"\text{{ mm}}^4",
+        ))
+
+    Iz_sum = " + ".join(f"{pr.Iz_total:,.0f}" for pr in result.parts)
+    steps.append((
+        "",
+        r"I_" + Iz_s + r" = " + Iz_sum
+        + r" = " + f"{result.Iz:,.0f}" + r"\text{{ mm}}^4"
+        + r" = " + f"{result.Iz / 1e6:,.2f}" + r" \times 10^6 \text{{ mm}}^4"
+        + r" = " + f"{result.Iz * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4",
+    ))
+
+    # --- Product of inertia + Principal moments (skip for symmetric sections) ---
+    if not result.axes_coincide:
+        steps.append((
+            f"Product of inertia I<sub>{Iyz_sub}</sub> \u2014 Parallel axis theorem (Steiner)",
+            r"I_{" + Iyz_sub + r"} = \sum A_i \cdot d_{" + v_ax
+            + r",i} \cdot d_{" + h_ax + r",i}",
+        ))
+
+        for pr in result.parts:
+            steps.append((
+                "",
+                r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
+                + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
+                + r" \cdot "
+                + f"({pr.yc:.1f} - {result.yc:.2f})"
+                + r" \cdot "
+                + f"({pr.zc:.1f} - {result.zc:.2f})"
+                + r" = " + f"{pr.Iyz_steiner:,.0f}" + r"\text{{ mm}}^4",
+            ))
+
+        Iyz_sum = " + ".join(
+            f"({pr.Iyz_steiner:,.0f})" if pr.Iyz_steiner < 0
+            else f"{pr.Iyz_steiner:,.0f}"
+            for pr in result.parts
+        )
+        steps.append((
+            "",
+            r"I_{" + Iyz_sub + r"} = " + Iyz_sum
+            + r" = " + f"{result.Iyz:,.0f}" + r"\text{{ mm}}^4"
+            + r" = " + f"{result.Iyz * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4",
+        ))
+
+        # --- Principal moments of inertia ---
+        steps.append((
+            "Principal moments of inertia",
+            r"I_{\max,\min} = \frac{I_" + Iy_s + r" + I_" + Iz_s
+            + r"}{2} \pm \sqrt{\left(\frac{I_" + Iy_s + r" - I_" + Iz_s
+            + r"}{2}\right)^2 + I_{" + Iyz_sub + r"}^2}",
+        ))
+        steps.append((
+            "",
+            r"I_{\max,\min} = \frac{" + f"{result.Iy:,.0f} + {result.Iz:,.0f}"
+            + r"}{2} \pm \sqrt{\left(\frac{" + f"{result.Iy:,.0f} - {result.Iz:,.0f}"
+            + r"}{2}\right)^2 + " + f"({result.Iyz:,.0f})^2" + r"}",
+        ))
+        steps.append((
+            "",
+            r"I_{\max} = " + f"{result.I_max:,.0f}" + r"\text{{ mm}}^4"
+            + r" = " + f"{result.I_max * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4",
+        ))
+        steps.append((
+            "",
+            r"I_{\min} = " + f"{result.I_min:,.0f}" + r"\text{{ mm}}^4"
+            + r" = " + f"{result.I_min * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4",
+        ))
+
+        # --- Principal axis angle ---
+        steps.append((
+            "Principal axis rotation angle",
+            r"\alpha = \frac{1}{2} \arctan\!\left(\frac{-2\,I_{" + Iyz_sub
+            + r"}}{I_" + Iy_s + r" - I_" + Iz_s + r"}\right)"
+            + r" = \frac{1}{2} \arctan\!\left(\frac{-2 \cdot "
+            + f"({result.Iyz:,.0f})" + r"}{"
+            + f"{result.Iy:,.0f} - {result.Iz:,.0f}" + r"}\right)"
+            + r" = " + f"{result.alpha_deg:.1f}" + r"\degree",
+        ))
+
+    # --- Section modulus Wy ---
+    steps.append((
+        f"Section modulus \u2014 {_sub(W_vert_label)}",
+        r"W_{" + Iy_s + r",\text{top}} = \frac{I_" + Iy_s + r"}{" + v_ax
+        + r"_{\text{top}}} = \frac{"
+        + f"{result.Iy:,.0f}" + r"}{" + f"{result.y_top:.1f}" + r"}"
+        + r" = " + f"{result.Wy_top:,.0f}" + r"\text{{ mm}}^3"
+        + r" = " + f"{result.Wy_top * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3",
+    ))
+    steps.append((
+        "",
+        r"W_{" + Iy_s + r",\text{bot}} = \frac{I_" + Iy_s + r"}{" + v_ax
+        + r"_{\text{bot}}} = \frac{"
+        + f"{result.Iy:,.0f}" + r"}{" + f"{result.y_bot:.1f}" + r"}"
+        + r" = " + f"{result.Wy_bot:,.0f}" + r"\text{{ mm}}^3"
+        + r" = " + f"{result.Wy_bot * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3",
+    ))
+    Wy_top_val = f"{result.Wy_top:,.0f}"
+    Wy_bot_val = f"{result.Wy_bot:,.0f}"
+    if result.Wy_top <= result.Wy_bot:
+        steps.append((
+            "",
+            r"W_" + Iy_s + r" = \min(" + Wy_top_val + r",\;" + Wy_bot_val
+            + r") = " + Wy_top_val
+            + r"\text{{ mm}}^3 \quad \leftarrow \text{top governs}",
+        ))
+    else:
+        steps.append((
+            "",
+            r"W_" + Iy_s + r" = \min(" + Wy_top_val + r",\;" + Wy_bot_val
+            + r") = " + Wy_bot_val
+            + r"\text{{ mm}}^3 \quad \leftarrow \text{bottom governs}",
+        ))
+
+    # --- Section modulus Wz ---
+    steps.append((
+        f"Section modulus \u2014 {_sub(W_horiz_label)}",
+        r"W_{" + Iz_s + r",\text{left}} = \frac{I_" + Iz_s + r"}{" + h_ax
+        + r"_{\text{left}}} = \frac{"
+        + f"{result.Iz:,.0f}" + r"}{" + f"{result.z_left:.1f}" + r"}"
+        + r" = " + f"{result.Wz_left:,.0f}" + r"\text{{ mm}}^3"
+        + r" = " + f"{result.Wz_left * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3",
+    ))
+    steps.append((
+        "",
+        r"W_{" + Iz_s + r",\text{right}} = \frac{I_" + Iz_s + r"}{" + h_ax
+        + r"_{\text{right}}} = \frac{"
+        + f"{result.Iz:,.0f}" + r"}{" + f"{result.z_right:.1f}" + r"}"
+        + r" = " + f"{result.Wz_right:,.0f}" + r"\text{{ mm}}^3"
+        + r" = " + f"{result.Wz_right * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3",
+    ))
+    Wz_left_val = f"{result.Wz_left:,.0f}"
+    Wz_right_val = f"{result.Wz_right:,.0f}"
+    if result.Wz_left <= result.Wz_right:
+        steps.append((
+            "",
+            r"W_" + Iz_s + r" = \min(" + Wz_left_val + r",\;" + Wz_right_val
+            + r") = " + Wz_left_val
+            + r"\text{{ mm}}^3 \quad \leftarrow \text{left governs}",
+        ))
+    else:
+        steps.append((
+            "",
+            r"W_" + Iz_s + r" = \min(" + Wz_left_val + r",\;" + Wz_right_val
+            + r") = " + Wz_right_val
+            + r"\text{{ mm}}^3 \quad \leftarrow \text{right governs}",
+        ))
+
+    # --- Radius of gyration ---
+    steps.append((
+        "Radius of gyration",
+        r"i_" + Iy_s + r" = \sqrt{\frac{I_" + Iy_s + r"}{A}} = \sqrt{\frac{"
+        + f"{result.Iy:,.0f}" + r"}{" + f"{result.A_total:.0f}" + r"}}"
+        + r" = " + f"{result.iy:.1f}" + r"\text{{ mm}}"
+        + r" = " + f"{result.iy / 10:.2f}" + r"\text{{ cm}}",
+    ))
+    steps.append((
+        "",
+        r"i_" + Iz_s + r" = \sqrt{\frac{I_" + Iz_s + r"}{A}} = \sqrt{\frac{"
+        + f"{result.Iz:,.0f}" + r"}{" + f"{result.A_total:.0f}" + r"}}"
+        + r" = " + f"{result.iz:.1f}" + r"\text{{ mm}}"
+        + r" = " + f"{result.iz / 10:.2f}" + r"\text{{ cm}}",
+    ))
+
+    return steps
+
+
+# ---------------------------------------------------------------------------
+# HTML report helpers (summary block + image embedding)
+# ---------------------------------------------------------------------------
+
+def build_summary_html(
+    result: SectionResult,
+    section_name: str,
+    axis_convention: str = "yz_eurocode",
+    convention_label: str = "",
+    timestamp: str = "",
+) -> str:
+    """Build the section properties summary block for the HTML report.
+
+    Mirrors the on-screen "Section properties" block: A, Iy, Iz, Iyz, Imax,
+    Imin, Wy, Wz, iy, iz with cm-equivalent units. Returned HTML is intended
+    to be passed to ``render_latex_html`` via the ``intro_html`` parameter.
+    """
+    conv = AXIS_CONVENTIONS[axis_convention]
+    h_ax = conv["horiz_axis"]
+    v_ax = conv["vert_axis"]
+    Iyz_sub = conv["Iyz_sub"]
+
+    lines: list[str] = []
+    lines.append(
+        f"<b>A</b> = {result.A_total:,.0f} mm²"
+        f" = {result.A_total * MM2_TO_CM2:,.2f} cm²"
+    )
+    lines.append(
+        f"<b>{_sub(conv['I_vert'])}</b> = {result.Iy:,.0f} mm⁴"
+        f" = {result.Iy / 1e6:,.2f} ×10⁶ mm⁴"
+        f" = {result.Iy * MM4_TO_CM4:,.1f} cm⁴"
+    )
+    lines.append(
+        f"<b>{_sub(conv['I_horiz'])}</b> = {result.Iz:,.0f} mm⁴"
+        f" = {result.Iz / 1e6:,.2f} ×10⁶ mm⁴"
+        f" = {result.Iz * MM4_TO_CM4:,.1f} cm⁴"
+    )
+    lines.append(
+        f"<b>I<sub>{Iyz_sub}</sub></b>"
+        f" = {result.Iyz:,.0f} mm⁴"
+        f" = {result.Iyz * MM4_TO_CM4:,.1f} cm⁴"
+    )
+    lines.append(
+        f"<b>I<sub>max</sub></b> = {result.I_max:,.0f} mm⁴"
+        f" = {result.I_max * MM4_TO_CM4:,.1f} cm⁴"
+    )
+    if result.axes_coincide:
+        lines.append(
+            f"<b>I<sub>min</sub></b> = {result.I_min:,.0f} mm⁴"
+            f" = {result.I_min * MM4_TO_CM4:,.1f} cm⁴"
+            f" &nbsp; <i>(principal axes coincide with centroidal axes)</i>"
+        )
+    else:
+        lines.append(
+            f"<b>I<sub>min</sub></b> = {result.I_min:,.0f} mm⁴"
+            f" = {result.I_min * MM4_TO_CM4:,.1f} cm⁴"
+            f" &nbsp; <b>α</b> = {result.alpha_deg:.1f}°"
+        )
+    lines.append(
+        f"<b>{_sub(conv['W_vert'])}</b>"
+        f" = {result.Wy:,.0f} mm³"
+        f" = {result.Wy * MM3_TO_CM3:,.1f} cm³"
+    )
+    lines.append(
+        f"<b>{_sub(conv['W_horiz'])}</b>"
+        f" = {result.Wz:,.0f} mm³"
+        f" = {result.Wz * MM3_TO_CM3:,.1f} cm³"
+    )
+    lines.append(
+        f"<b>{_sub(conv['i_vert'])}</b>"
+        f" = {result.iy:.1f} mm = {result.iy / 10:.2f} cm"
+    )
+    lines.append(
+        f"<b>{_sub(conv['i_horiz'])}</b>"
+        f" = {result.iz:.1f} mm = {result.iz / 10:.2f} cm"
+    )
+
+    name_label = section_name.strip() or "(unnamed)"
+    label_str = convention_label or f"{h_ax}, {v_ax}"
+    meta_parts = [f"Section: <b>{name_label}</b>",
+                  f"Convention: {label_str}"]
+    if timestamp:
+        meta_parts.append(f"Generated: {timestamp}")
+    meta_html = " &nbsp;|&nbsp; ".join(meta_parts)
+
+    return (
+        f'<div class="report-meta">{meta_html}</div>\n'
+        '<h3>Section properties</h3>\n'
+        '<div class="report-summary">'
+        + "<br>".join(lines)
+        + "</div>"
+    )
+
+
+def figure_to_img_html(fig, alt: str = "figure") -> str:
+    """Encode a Plotly figure as a base64 PNG ``<img>`` tag.
+
+    Returns empty string if image export (kaleido) is unavailable.
+    """
+    import base64
+    try:
+        png_bytes = fig.to_image(format="png", scale=2)
+    except Exception:
+        return ""
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return (
+        '<div class="report-image">'
+        f'<img src="data:image/png;base64,{b64}" alt="{alt}">'
+        '</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# HTML rendering for LaTeX steps (used by app.py download and test prep)
+# ---------------------------------------------------------------------------
+
+def render_latex_html(
+    title: str,
+    steps: list[tuple[str, str]],
+    intro_html: str = "",
+) -> str:
+    """Render a self-contained HTML report with KaTeX-rendered LaTeX.
+
+    The returned HTML opens in any browser and can be printed to PDF
+    (browser print dialog → "Save as PDF").
+
+    Args:
+        title: Report title shown as ``<h2>``.
+        steps: List of ``(heading, latex)`` tuples for the calculation steps.
+        intro_html: Optional HTML inserted between the title and the steps
+            (e.g. summary table, embedded image). Pass an empty string to
+            keep the bare-steps layout.
+    """
+    body_lines = [f"<h2>{title}</h2>"]
+    if intro_html:
+        body_lines.append(intro_html)
+    if steps:
+        body_lines.append('<h2 class="section-heading">Step-by-step calculation</h2>')
+    for heading, latex_str in steps:
+        if heading:
+            body_lines.append(f"<h3>{heading}</h3>")
+        if latex_str:
+            body_lines.append(f"<p>$${latex_str}$$</p>")
+    body = "\n".join(body_lines)
+    return (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
+        '<meta charset="UTF-8">\n'
+        f"<title>{title}</title>\n"
+        '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">\n'
+        '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>\n'
+        '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>\n'
+        "<style>\n"
+        "  body { font-family: sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; line-height: 1.6; color: #222; }\n"
+        "  h2 { border-bottom: 2px solid #333; padding-bottom: 0.3em; margin-top: 1.6em; }\n"
+        "  h2:first-of-type { margin-top: 0; }\n"
+        "  h3 { margin-top: 1.5em; color: #333; }\n"
+        "  .katex-display { text-align: left !important; margin: 0.5em 0 !important; }\n"
+        "  .report-summary { background: #f7f7f9; border-left: 4px solid #4a76b8; padding: 0.8em 1.2em; margin: 1em 0; line-height: 1.9; font-size: 0.95em; }\n"
+        "  .report-summary b { color: #1a3050; }\n"
+        "  .report-image { text-align: center; margin: 1em 0; }\n"
+        "  .report-image img { max-width: 100%; height: auto; }\n"
+        "  .report-meta { color: #666; font-size: 0.9em; margin-bottom: 1em; }\n"
+        "  table.report-table { border-collapse: collapse; margin: 0.6em 0; font-size: 0.95em; }\n"
+        "  table.report-table td, table.report-table th { border: 1px solid #ccc; padding: 4px 10px; text-align: left; }\n"
+        "  table.report-table th { background: #eef; }\n"
+        "  @media print {\n"
+        "    body { max-width: 100%; margin: 0; padding: 0 0.5cm; font-size: 11pt; }\n"
+        "    h2 { page-break-after: avoid; }\n"
+        "    h3 { page-break-after: avoid; }\n"
+        "    p { page-break-inside: avoid; }\n"
+        "    .report-summary { page-break-inside: avoid; }\n"
+        "    .report-image { page-break-inside: avoid; }\n"
+        "  }\n"
+        "</style>\n</head>\n<body>\n"
+        f"{body}\n"
+        "<script>\n"
+        '  renderMathInElement(document.body, {\n'
+        '    delimiters: [{ left: "$$", right: "$$", display: true }],\n'
+        "    throwOnError: false,\n"
+        "  });\n"
+        "</script>\n</body>\n</html>"
+    )

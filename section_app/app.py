@@ -26,6 +26,10 @@ from section_solver import (
     SectionResult,
     calculate,
     validate_parts,
+    build_latex_steps,
+    render_latex_html,
+    build_summary_html,
+    figure_to_img_html,
     MM2_TO_CM2,
     MM4_TO_CM4,
     MM3_TO_CM3,
@@ -794,12 +798,23 @@ with st.sidebar:
                         "iz_mm": round(cached_result.iz, 2),
                         "Wy_mm3": round(cached_result.Wy, 2),
                         "Wz_mm3": round(cached_result.Wz, 2),
+                        "I_max_mm4": round(cached_result.I_max, 2),
+                        "I_min_mm4": round(cached_result.I_min, 2),
+                        "Iyz_mm4": round(cached_result.Iyz, 2),
+                        "alpha_deg": round(cached_result.alpha_deg, 2),
+                        "axes_coincide": cached_result.axes_coincide,
+                        "yc_mm": round(cached_result.yc, 2),
+                        "zc_mm": round(cached_result.zc, 2),
                     }
                     result_env = file_io.make_result_envelope(sec_name, result_data)
                     path = file_io.save_to_exchange(result_env, sec_name)
                     st.success(f"Saved to {path.relative_to(path.parent.parent.parent)}")
                 except Exception as e:
                     st.error(f"Export failed: {e}")
+
+        # Placeholder — download buttons rendered later, after calculation runs,
+        # to ensure they reflect the current on-screen result (not the previous rerun).
+        _download_slot = st.container()
 
     # Section name
     st.session_state.section_name = st.text_input(
@@ -1202,6 +1217,7 @@ if result is not None and error_msg is None:
         plot_bgcolor="white",
     )
 
+    st.session_state._last_figure = fig
     st.plotly_chart(fig, use_container_width=False, config={
         "scrollZoom": False, "displaylogo": False,
         "modeBarButtonsToRemove": ["lasso2d", "select2d"],
@@ -1464,254 +1480,66 @@ if result is not None and error_msg is None:
     )
 
     # ---------------------------------------------------------------------------
-    # Step-by-step calculation
+    # Step-by-step calculation (rendered from solver's build_latex_steps)
     # ---------------------------------------------------------------------------
 
     st.divider()
     st.subheader("Step-by-step calculation")
 
-    # --- Area ---
-    st.markdown("**Area**")
-    area_parts = " + ".join(f"{_fmt(pr.b)} \\cdot {_fmt(pr.h)}" for pr in result.parts)
-    area_values = " + ".join(f"{pr.A:.0f}" for pr in result.parts)
-    st.latex(
-        r"A = \sum b_i \cdot h_i = " + area_parts
-        + r" = " + area_values
-        + r" = " + f"{result.A_total:.0f}"
-        + r"\text{{ mm}}^2"
+    conv_key = st.session_state.get("axis_convention", "yz_eurocode")
+    for heading, latex_str in build_latex_steps(result, conv_key):
+        if heading:
+            st.markdown(f"**{heading}**", unsafe_allow_html=True)
+        if latex_str:
+            st.latex(latex_str)
+
+
+# ---------------------------------------------------------------------------
+# Render download buttons in the sidebar placeholder.
+# Done at end of script so `result` is guaranteed to match the on-screen
+# output (rather than carrying over stale values from the previous rerun,
+# which would happen if rendered earlier inside the sidebar block).
+# ---------------------------------------------------------------------------
+
+if result is not None:
+    _dl_name = st.session_state.get("section_name", "").strip() or "section"
+    _dl_fig = st.session_state.get("_last_figure")
+    _conv_key = st.session_state.get("axis_convention", "yz_eurocode")
+    _conv_label = AXIS_CONVENTIONS[_conv_key]["label"]
+    _timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    _steps = build_latex_steps(result, _conv_key)
+    _summary_html = build_summary_html(
+        result, _dl_name, _conv_key,
+        convention_label=_conv_label, timestamp=_timestamp,
+    )
+    _image_html = (
+        figure_to_img_html(_dl_fig, alt=_dl_name) if _dl_fig else ""
+    )
+    _intro_html = _image_html + _summary_html if _image_html else _summary_html
+    _report_html = render_latex_html(
+        f"Section Properties: {_dl_name}", _steps, intro_html=_intro_html,
     )
 
-    # --- Centroid (vertical axis) ---
-    st.markdown(f"**Centroid {v_ax}<sub>C</sub>**", unsafe_allow_html=True)
-    num_y = " + ".join(
-        f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)}) \\cdot {pr.yc:.1f}"
-        for pr in result.parts
-    )
-    st.latex(
-        v_ax + r"_C = \frac{\sum A_i \cdot "
-        + v_ax + r"_{c,i}}{\sum A_i} = "
-        r"\frac{" + num_y + r"}{" + f"{result.A_total:.0f}" + r"}"
-        r" = " + f"{result.yc:.2f}" + r"\text{{ mm}}"
-    )
-
-    st.markdown(f"**Centroid {h_ax}<sub>C</sub>**", unsafe_allow_html=True)
-    num_z = " + ".join(
-        f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)}) \\cdot {pr.zc:.1f}"
-        for pr in result.parts
-    )
-    st.latex(
-        h_ax + r"_C = \frac{\sum A_i \cdot "
-        + h_ax + r"_{c,i}}{\sum A_i} = "
-        r"\frac{" + num_z + r"}{" + f"{result.A_total:.0f}" + r"}"
-        r" = " + f"{result.zc:.2f}" + r"\text{{ mm}}"
-    )
-
-    # --- Moment of inertia (about horizontal axis — strong for I-beams) ---
-    st.markdown(
-        f"**{_sub(I_vert_label)}** — Parallel axis theorem (Steiner)",
-        unsafe_allow_html=True,
-    )
-    st.latex(
-        r"I_" + v_ax + r" = \sum \left( I_{\text{local},i} + A_i \cdot d_i^2 \right)"
-    )
-
-    for pr in result.parts:
-        st.latex(
-            r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
-            r"I_" + v_ax + r" = \frac{"
-            + f"{_fmt(pr.b)} \\cdot {_fmt(pr.h)}^3" + r"}{12} + "
-            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
-            + r" \cdot "
-            + f"({pr.yc:.1f} - {result.yc:.2f})^2"
-            + r" = " + f"{pr.Iy_local:,.0f}" + r" + " + f"{pr.Iy_steiner:,.0f}"
-            + r" = " + f"{pr.Iy_total:,.0f}" + r"\text{{ mm}}^4"
+    with _download_slot:
+        st.download_button(
+            "Download Report (HTML)",
+            data=_report_html,
+            file_name=f"{_dl_name}_section_report.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Self-contained HTML — open in browser, print → Save as PDF",
         )
 
-    Iy_sum = " + ".join(f"{pr.Iy_total:,.0f}" for pr in result.parts)
-    st.latex(
-        r"I_" + v_ax + r" = " + Iy_sum
-        + r" = " + f"{result.Iy:,.0f}" + r"\text{{ mm}}^4"
-        + r" = " + f"{result.Iy / 1e6:,.2f}" + r" \times 10^6 \text{{ mm}}^4"
-        + r" = " + f"{result.Iy * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4"
-    )
-
-    # --- Moment of inertia (about vertical axis — weak for I-beams) ---
-    st.markdown(
-        f"**{_sub(I_horiz_label)}** — Parallel axis theorem (Steiner)",
-        unsafe_allow_html=True,
-    )
-
-    for pr in result.parts:
-        st.latex(
-            r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
-            r"I_" + h_ax + r" = \frac{"
-            + f"{_fmt(pr.h)} \\cdot {_fmt(pr.b)}^3" + r"}{12} + "
-            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
-            + r" \cdot "
-            + f"({pr.zc:.1f} - {result.zc:.2f})^2"
-            + r" = " + f"{pr.Iz_local:,.0f}" + r" + " + f"{pr.Iz_steiner:,.0f}"
-            + r" = " + f"{pr.Iz_total:,.0f}" + r"\text{{ mm}}^4"
-        )
-
-    Iz_sum = " + ".join(f"{pr.Iz_total:,.0f}" for pr in result.parts)
-    st.latex(
-        r"I_" + h_ax + r" = " + Iz_sum
-        + r" = " + f"{result.Iz:,.0f}" + r"\text{{ mm}}^4"
-        + r" = " + f"{result.Iz / 1e6:,.2f}" + r" \times 10^6 \text{{ mm}}^4"
-        + r" = " + f"{result.Iz * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4"
-    )
-
-    # --- Product of inertia (centrifugal moment) ---
-    st.markdown(
-        f"**Product of inertia I<sub>{Iyz_sub}</sub>** — Parallel axis theorem (Steiner)",
-        unsafe_allow_html=True,
-    )
-    st.latex(
-        r"I_{" + Iyz_sub + r"} = \sum A_i \cdot d_{" + v_ax
-        + r",i} \cdot d_{" + h_ax + r",i}"
-    )
-
-    for pr in result.parts:
-        st.latex(
-            r"\text{" + pr.name.replace(" ", r"\ ") + r"}: \quad "
-            + f"({_fmt(pr.b)} \\cdot {_fmt(pr.h)})"
-            + r" \cdot "
-            + f"({pr.yc:.1f} - {result.yc:.2f})"
-            + r" \cdot "
-            + f"({pr.zc:.1f} - {result.zc:.2f})"
-            + r" = " + f"{pr.Iyz_steiner:,.0f}" + r"\text{{ mm}}^4"
-        )
-
-    Iyz_sum = " + ".join(
-        f"({pr.Iyz_steiner:,.0f})" if pr.Iyz_steiner < 0 else f"{pr.Iyz_steiner:,.0f}"
-        for pr in result.parts
-    )
-    st.latex(
-        r"I_{" + Iyz_sub + r"} = " + Iyz_sum
-        + r" = " + f"{result.Iyz:,.0f}" + r"\text{{ mm}}^4"
-        + r" = " + f"{result.Iyz * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4"
-    )
-
-    # --- Principal moments of inertia ---
-    st.markdown("**Principal moments of inertia**")
-    st.latex(
-        r"I_{\max,\min} = \frac{I_" + v_ax + r" + I_" + h_ax
-        + r"}{2} \pm \sqrt{\left(\frac{I_" + v_ax + r" - I_" + h_ax
-        + r"}{2}\right)^2 + I_{" + Iyz_sub + r"}^2}"
-    )
-    st.latex(
-        r"I_{\max,\min} = \frac{" + f"{result.Iy:,.0f} + {result.Iz:,.0f}"
-        + r"}{2} \pm \sqrt{\left(\frac{" + f"{result.Iy:,.0f} - {result.Iz:,.0f}"
-        + r"}{2}\right)^2 + " + f"({result.Iyz:,.0f})^2" + r"}"
-    )
-    st.latex(
-        r"I_{\max} = " + f"{result.I_max:,.0f}" + r"\text{{ mm}}^4"
-        + r" = " + f"{result.I_max * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4"
-    )
-    st.latex(
-        r"I_{\min} = " + f"{result.I_min:,.0f}" + r"\text{{ mm}}^4"
-        + r" = " + f"{result.I_min * MM4_TO_CM4:,.1f}" + r"\text{{ cm}}^4"
-    )
-
-    # --- Principal axis angle ---
-    st.markdown("**Principal axis rotation angle**")
-    if result.axes_coincide:
-        st.latex(
-            r"I_{" + Iyz_sub + r"} \approx 0 \quad \Rightarrow \quad "
-            r"\alpha = 0° \quad \text{(principal axes coincide with centroidal axes)}"
-        )
-    else:
-        st.latex(
-            r"\alpha = \frac{1}{2} \arctan\!\left(\frac{-2\,I_{" + Iyz_sub
-            + r"}}{I_" + v_ax + r" - I_" + h_ax + r"}\right)"
-            + r" = \frac{1}{2} \arctan\!\left(\frac{-2 \cdot "
-            + f"({result.Iyz:,.0f})" + r"}{"
-            + f"{result.Iy:,.0f} - {result.Iz:,.0f}" + r"}\right)"
-            + r" = " + f"{result.alpha_deg:.1f}" + r"°"
-        )
-
-    # --- Section modulus (both axes) with W comparison ---
-    st.markdown(
-        f"**Section modulus — {_sub(W_vert_label)}**",
-        unsafe_allow_html=True,
-    )
-    st.latex(
-        r"W_{" + v_ax + r",\text{top}} = \frac{I_" + v_ax + r"}{" + v_ax
-        + r"_{\text{top}}} = \frac{"
-        + f"{result.Iy:,.0f}" + r"}{" + f"{result.y_top:.1f}" + r"}"
-        + r" = " + f"{result.Wy_top:,.0f}" + r"\text{{ mm}}^3"
-        + r" = " + f"{result.Wy_top * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3"
-    )
-    st.latex(
-        r"W_{" + v_ax + r",\text{bot}} = \frac{I_" + v_ax + r"}{" + v_ax
-        + r"_{\text{bot}}} = \frac{"
-        + f"{result.Iy:,.0f}" + r"}{" + f"{result.y_bot:.1f}" + r"}"
-        + r" = " + f"{result.Wy_bot:,.0f}" + r"\text{{ mm}}^3"
-        + r" = " + f"{result.Wy_bot * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3"
-    )
-    # W_y comparison: select governing (minimum)
-    Wy_top_val = f"{result.Wy_top:,.0f}"
-    Wy_bot_val = f"{result.Wy_bot:,.0f}"
-    if result.Wy_top <= result.Wy_bot:
-        Wy_comparison = (
-            r"W_" + v_ax + r" = \min(" + Wy_top_val + r",\;" + Wy_bot_val
-            + r") = " + Wy_top_val
-            + r"\text{{ mm}}^3 \quad \leftarrow \text{top governs}"
-        )
-    else:
-        Wy_comparison = (
-            r"W_" + v_ax + r" = \min(" + Wy_top_val + r",\;" + Wy_bot_val
-            + r") = " + Wy_bot_val
-            + r"\text{{ mm}}^3 \quad \leftarrow \text{bottom governs}"
-        )
-    st.latex(Wy_comparison)
-
-    st.markdown(
-        f"**Section modulus — {_sub(W_horiz_label)}**",
-        unsafe_allow_html=True,
-    )
-    st.latex(
-        r"W_{" + h_ax + r",\text{left}} = \frac{I_" + h_ax + r"}{" + h_ax
-        + r"_{\text{left}}} = \frac{"
-        + f"{result.Iz:,.0f}" + r"}{" + f"{result.z_left:.1f}" + r"}"
-        + r" = " + f"{result.Wz_left:,.0f}" + r"\text{{ mm}}^3"
-        + r" = " + f"{result.Wz_left * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3"
-    )
-    st.latex(
-        r"W_{" + h_ax + r",\text{right}} = \frac{I_" + h_ax + r"}{" + h_ax
-        + r"_{\text{right}}} = \frac{"
-        + f"{result.Iz:,.0f}" + r"}{" + f"{result.z_right:.1f}" + r"}"
-        + r" = " + f"{result.Wz_right:,.0f}" + r"\text{{ mm}}^3"
-        + r" = " + f"{result.Wz_right * MM3_TO_CM3:,.1f}" + r"\text{{ cm}}^3"
-    )
-    # W_z comparison: select governing (minimum)
-    Wz_left_val = f"{result.Wz_left:,.0f}"
-    Wz_right_val = f"{result.Wz_right:,.0f}"
-    if result.Wz_left <= result.Wz_right:
-        Wz_comparison = (
-            r"W_" + h_ax + r" = \min(" + Wz_left_val + r",\;" + Wz_right_val
-            + r") = " + Wz_left_val
-            + r"\text{{ mm}}^3 \quad \leftarrow \text{left governs}"
-        )
-    else:
-        Wz_comparison = (
-            r"W_" + h_ax + r" = \min(" + Wz_left_val + r",\;" + Wz_right_val
-            + r") = " + Wz_right_val
-            + r"\text{{ mm}}^3 \quad \leftarrow \text{right governs}"
-        )
-    st.latex(Wz_comparison)
-
-    # --- Radius of gyration ---
-    st.markdown("**Radius of gyration**")
-    st.latex(
-        r"i_" + v_ax + r" = \sqrt{\frac{I_" + v_ax + r"}{A}} = \sqrt{\frac{"
-        + f"{result.Iy:,.0f}" + r"}{" + f"{result.A_total:.0f}" + r"}}"
-        + r" = " + f"{result.iy:.1f}" + r"\text{{ mm}}"
-        + r" = " + f"{result.iy / 10:.2f}" + r"\text{{ cm}}"
-    )
-    st.latex(
-        r"i_" + h_ax + r" = \sqrt{\frac{I_" + h_ax + r"}{A}} = \sqrt{\frac{"
-        + f"{result.Iz:,.0f}" + r"}{" + f"{result.A_total:.0f}" + r"}}"
-        + r" = " + f"{result.iz:.1f}" + r"\text{{ mm}}"
-        + r" = " + f"{result.iz / 10:.2f}" + r"\text{{ cm}}"
-    )
+        if _dl_fig is not None:
+            try:
+                _img_bytes = _dl_fig.to_image(format="png", scale=2)
+                st.download_button(
+                    "Download Section Image (PNG)",
+                    data=_img_bytes,
+                    file_name=f"{_dl_name}_section.png",
+                    mime="image/png",
+                    use_container_width=True,
+                )
+            except Exception as _img_err:
+                st.caption(f"Image export unavailable: {_img_err}")

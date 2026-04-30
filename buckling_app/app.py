@@ -29,6 +29,10 @@ from buckling_solver import (
     check_member,
     validate_input,
     buckling_curve_points,
+    build_latex_steps,
+    render_latex_html,
+    build_summary_html,
+    figure_to_img_html,
     IMPERFECTION_FACTORS,
     BUCKLING_CURVES,
     MU_VALUES,
@@ -211,9 +215,9 @@ def _load_exchange_sections() -> list[dict]:
 # Widget keys that must be cleared when member_input changes externally
 # (preset, import, file load) so widgets re-read from session state.
 _INPUT_WIDGET_KEYS = [
-    "inp_name", "inp_NEd", "inp_L", "inp_A", "inp_Iy", "inp_Iz",
-    "inp_E", "inp_gM0", "inp_gM1", "inp_bc_y", "inp_bc_z",
-    "inp_curve_y", "inp_curve_z", "inp_steel",
+    "inp_name", "inp_NEd", "inp_L", "inp_A", "inp_I",
+    "inp_E", "inp_gM0", "inp_gM1", "inp_bc",
+    "inp_curve", "inp_steel", "inp_I_source",
 ]
 
 
@@ -227,19 +231,16 @@ def _sync_widget_keys(mi: "MemberInput"):
     st.session_state["inp_NEd"] = mi.N_Ed_kN
     st.session_state["inp_L"] = mi.L_m
     st.session_state["inp_A"] = mi.A_mm2
-    st.session_state["inp_Iy"] = mi.Iy_mm4
-    st.session_state["inp_Iz"] = mi.Iz_mm4
+    st.session_state["inp_I"] = min(mi.Iy_mm4, mi.Iz_mm4)
     st.session_state["inp_E"] = mi.E_MPa
     st.session_state["inp_gM0"] = mi.gamma_M0
     st.session_state["inp_gM1"] = mi.gamma_M1
-    # Selectboxes: find matching label for the mu value
-    for bc_key, mu_val in [("inp_bc_y", mi.mu_y), ("inp_bc_z", mi.mu_z)]:
-        for i, opt in enumerate(BC_OPTIONS):
-            if abs(MU_VALUES[opt] - mu_val) < 0.01:
-                st.session_state[bc_key] = BC_LABELS[i]
-                break
-    st.session_state["inp_curve_y"] = mi.curve_y
-    st.session_state["inp_curve_z"] = mi.curve_z
+    # Single boundary condition selectbox
+    for i, opt in enumerate(BC_OPTIONS):
+        if abs(MU_VALUES[opt] - mi.mu_y) < 0.01:
+            st.session_state["inp_bc"] = BC_LABELS[i]
+            break
+    st.session_state["inp_curve"] = mi.curve_y
     # Steel grade: find matching grade name for fy value
     for gname, gfy in STEEL_GRADES.items():
         if abs(gfy - mi.fy_MPa) < 0.1:
@@ -336,12 +337,24 @@ with st.sidebar:
                                  use_container_width=True):
                         props = sec["data"].get("properties", sec["data"])
                         current = st.session_state.member_input
+                        # Store all I values for dropdown selection
+                        Iy = props["Iy_mm4"]
+                        Iz = props["Iz_mm4"]
+                        I_min = props.get("I_min_mm4", min(Iy, Iz))
+                        I_max = props.get("I_max_mm4", max(Iy, Iz))
+                        st.session_state["imported_Iy"] = Iy
+                        st.session_state["imported_Iz"] = Iz
+                        st.session_state["imported_I_min"] = I_min
+                        st.session_state["imported_I_max"] = I_max
+                        st.session_state["imported_I_min_mm4"] = I_min
+                        st.session_state["inp_I_source"] = "I_min"
+                        # Use I_min for both axes (most conservative)
                         st.session_state.member_input = MemberInput(
                             name=sec["name"],
                             N_Ed_kN=current.N_Ed_kN,
                             A_mm2=props["A_mm2"],
-                            Iy_mm4=props["Iy_mm4"],
-                            Iz_mm4=props["Iz_mm4"],
+                            Iy_mm4=I_min,
+                            Iz_mm4=I_min,
                             fy_MPa=current.fy_MPa,
                             E_MPa=current.E_MPa,
                             L_m=current.L_m,
@@ -428,6 +441,10 @@ with st.sidebar:
         key="chk_step_by_step",
     )
 
+    # Placeholder — download buttons rendered later, after calculation runs,
+    # to ensure they reflect the current on-screen result (not the previous rerun).
+    _download_slot = st.container()
+
 
 # ---------------------------------------------------------------------------
 # Input section
@@ -453,15 +470,10 @@ with st.expander("Member Input", expanded=True):
         )
 
         st.markdown("**Boundary Conditions**")
-        new_bc_y = st.selectbox(
-            "\u03bcy (y-axis)", BC_LABELS, key="inp_bc_y",
+        new_bc = st.selectbox(
+            "\u03bc (effective length factor)", BC_LABELS, key="inp_bc",
         )
-        new_mu_y = MU_VALUES[BC_OPTIONS[BC_LABELS.index(new_bc_y)]]
-
-        new_bc_z = st.selectbox(
-            "\u03bcz (z-axis)", BC_LABELS, key="inp_bc_z",
-        )
-        new_mu_z = MU_VALUES[BC_OPTIONS[BC_LABELS.index(new_bc_z)]]
+        new_mu = MU_VALUES[BC_OPTIONS[BC_LABELS.index(new_bc)]]
 
     with col2:
         st.markdown("**Section Properties**")
@@ -470,16 +482,33 @@ with st.expander("Member Input", expanded=True):
             help="Cross-section area.",
             key="inp_A",
         )
-        new_Iy = st.number_input(
-            "Iy (mm\u2074)", min_value=1.0, step=100_000.0, format="%.0f",
-            help="Moment of inertia about y-axis.",
-            key="inp_Iy",
-        )
-        new_Iz = st.number_input(
-            "Iz (mm\u2074)", min_value=1.0, step=100_000.0, format="%.0f",
-            help="Moment of inertia about z-axis.",
-            key="inp_Iz",
-        )
+
+        # I selection with source dropdown when imported data available
+        has_imported = "imported_Iy" in st.session_state
+        if has_imported:
+            i_values = {
+                "I_min": st.session_state["imported_I_min"],
+                "I_max": st.session_state["imported_I_max"],
+                "Iy": st.session_state["imported_Iy"],
+                "Iz": st.session_state["imported_Iz"],
+            }
+            src_options = list(i_values.keys()) + ["Custom"]
+            i_source = st.selectbox("I source", src_options, key="inp_I_source")
+            if i_source != "Custom":
+                new_I = i_values[i_source]
+                st.caption(f"I = {new_I:,.0f} mm\u2074")
+            else:
+                new_I = st.number_input(
+                    "I (mm\u2074)", min_value=1.0, step=100_000.0, format="%.0f",
+                    help="Moment of inertia for buckling check.",
+                    key="inp_I",
+                )
+        else:
+            new_I = st.number_input(
+                "I (mm\u2074)", min_value=1.0, step=100_000.0, format="%.0f",
+                help="Moment of inertia for buckling check.",
+                key="inp_I",
+            )
 
         st.markdown("**Material & Safety**")
         steel_names = list(STEEL_GRADES.keys())
@@ -505,14 +534,10 @@ with st.expander("Member Input", expanded=True):
                 key="inp_gM1",
             )
 
-        st.markdown("**Buckling Curves**")
-        new_curve_y = st.selectbox(
-            "Curve y-axis", BUCKLING_CURVES, key="inp_curve_y",
-            help="Buckling curve for y-axis bending.",
-        )
-        new_curve_z = st.selectbox(
-            "Curve z-axis", BUCKLING_CURVES, key="inp_curve_z",
-            help="Buckling curve for z-axis bending.",
+        st.markdown("**Buckling Curve**")
+        new_curve = st.selectbox(
+            "Buckling curve", BUCKLING_CURVES, key="inp_curve",
+            help="Buckling curve for imperfection factor.",
         )
 
     # Imperfection factor reference table
@@ -522,20 +547,20 @@ with st.expander("Member Input", expanded=True):
             with ref_cols[i]:
                 st.metric(f"Curve {curve}", f"\u03b1 = {alpha}")
 
-# Build updated MemberInput from form values
+# Build updated MemberInput from form values (both axes get same I, mu, curve)
 new_inp = MemberInput(
     name=new_name,
     N_Ed_kN=new_N_Ed,
     A_mm2=new_A,
-    Iy_mm4=new_Iy,
-    Iz_mm4=new_Iz,
+    Iy_mm4=new_I,
+    Iz_mm4=new_I,
     fy_MPa=new_fy,
     E_MPa=new_E,
     L_m=new_L,
-    mu_y=new_mu_y,
-    mu_z=new_mu_z,
-    curve_y=new_curve_y,
-    curve_z=new_curve_z,
+    mu_y=new_mu,
+    mu_z=new_mu,
+    curve_y=new_curve,
+    curve_z=new_curve,
     gamma_M0=new_gamma_M0,
     gamma_M1=new_gamma_M1,
 )
@@ -555,6 +580,7 @@ try:
         error_msg = validation_error
     else:
         result = check_member(inp)
+        st.session_state._last_check_result = result
 except Exception as e:
     error_msg = f"Calculation error: {e}"
 
@@ -604,20 +630,32 @@ if result is not None:
                         name=f"Curve {bax.curve} (\u03b1={IMPERFECTION_FACTORS[bax.curve]})",
                     ))
 
+        # Detect single-axis mode (both axes identical)
+        _single_axis = (
+            result.buckling_y and result.buckling_z
+            and inp.Iy_mm4 == inp.Iz_mm4
+            and inp.mu_y == inp.mu_z
+            and inp.curve_y == inp.curve_z
+        )
+
         # Plot current member points
         if result.buckling_y:
             by = result.buckling_y
+            _label = "\u03c7" if _single_axis else "y: \u03c7"
+            _name = (f"Member: \u03bb\u0304={by.lambda_bar:.2f}, \u03c7={by.chi:.3f}"
+                     if _single_axis else
+                     f"Member (y-axis): \u03bb\u0304={by.lambda_bar:.2f}, \u03c7={by.chi:.3f}")
             fig.add_trace(go.Scatter(
                 x=[by.lambda_bar], y=[by.chi],
                 mode="markers+text",
                 marker=dict(size=14, color=COLOR_BUCKLING_Y, symbol="circle",
                             line=dict(width=2, color="white")),
-                text=[f"y: \u03c7={by.chi:.3f}"],
+                text=[f"{_label}={by.chi:.3f}"],
                 textposition="top right",
                 textfont=dict(size=13, color=COLOR_BUCKLING_Y),
-                name=f"Member (y-axis): \u03bb\u0304={by.lambda_bar:.2f}, \u03c7={by.chi:.3f}",
+                name=_name,
                 hovertemplate=(
-                    f"<b>y-axis</b><br>"
+                    f"<b>{'Buckling' if _single_axis else 'y-axis'}</b><br>"
                     f"\u03bb\u0304 = {by.lambda_bar:.3f}<br>"
                     f"\u03c7 = {by.chi:.3f}<br>"
                     f"Curve {by.curve}<br>"
@@ -626,8 +664,11 @@ if result is not None:
                 ),
             ))
 
-        if result.buckling_z and result.buckling_z.curve != result.buckling_y.curve or \
-           (result.buckling_z and abs(result.buckling_z.lambda_bar - result.buckling_y.lambda_bar) > 0.01):
+        # Only show z-axis point if it differs from y-axis
+        if not _single_axis and result.buckling_z and result.buckling_y and (
+            result.buckling_z.curve != result.buckling_y.curve
+            or abs(result.buckling_z.lambda_bar - result.buckling_y.lambda_bar) > 0.01
+        ):
             bz = result.buckling_z
             fig.add_trace(go.Scatter(
                 x=[bz.lambda_bar], y=[bz.chi],
@@ -679,11 +720,14 @@ if result is not None:
             plot_bgcolor="white",
         )
 
+        st.session_state._last_chart_figure = fig
         st.plotly_chart(fig, use_container_width=False, config={
             "scrollZoom": False,
             "displaylogo": False,
             "modeBarButtonsToRemove": ["lasso2d", "select2d"],
         })
+    else:
+        st.session_state._last_chart_figure = None
 
     st.divider()
 
@@ -693,11 +737,27 @@ if result is not None:
 
     st.subheader("Results Summary")
 
+    # I_min reference (from exchange import)
+    if "imported_I_min_mm4" in st.session_state:
+        st.caption(
+            f"I_min = {st.session_state['imported_I_min_mm4']:,.0f} mm\u2074"
+            f" (from imported section)"
+        )
+
     # Force direction
     if result.strength.is_tension:
         st.info(f"**N_Ed = {inp.N_Ed_kN:+.1f} kN** \u2192 Member is in **TENSION**. Only strength check required.")
     else:
         st.info(f"**N_Ed = {inp.N_Ed_kN:+.1f} kN** \u2192 Member is in **COMPRESSION**. Strength + buckling checks required.")
+
+    # Detect single-axis mode for display
+    _single_axis_results = (
+        result.buckling_y is not None
+        and result.buckling_z is not None
+        and inp.Iy_mm4 == inp.Iz_mm4
+        and inp.mu_y == inp.mu_z
+        and inp.curve_y == inp.curve_z
+    )
 
     # Utilization summary
     lines = []
@@ -711,33 +771,47 @@ if result is not None:
         f"{sr.utilization * 100:.1f}%</span> {_pass_fail_badge(sr.passed)}"
     )
 
-    # Buckling y
-    if result.buckling_y:
+    # Buckling — single line when single-axis, two lines otherwise
+    if _single_axis_results and result.buckling_y:
         by = result.buckling_y
         util_color = _utilization_color(by.utilization)
         skip_note = " (skip: \u03bb\u0304 \u2264 0.2)" if by.skip_buckling else ""
         lines.append(
-            f"<b>Buckling y-axis</b>: \u03c7<sub>y</sub> = {by.chi:.3f}, "
-            f"N<sub>b,Rd,y</sub> = {by.N_b_Rd_kN:,.1f} kN, "
+            f"<b>Buckling</b>: \u03c7 = {by.chi:.3f}, "
+            f"N<sub>b,Rd</sub> = {by.N_b_Rd_kN:,.1f} kN, "
             f"utilization = <span style='color:{util_color};font-weight:bold;'>"
             f"{by.utilization * 100:.1f}%</span> {_pass_fail_badge(by.passed)}{skip_note}"
         )
+    else:
+        if result.buckling_y:
+            by = result.buckling_y
+            util_color = _utilization_color(by.utilization)
+            skip_note = " (skip: \u03bb\u0304 \u2264 0.2)" if by.skip_buckling else ""
+            lines.append(
+                f"<b>Buckling y-axis</b>: \u03c7<sub>y</sub> = {by.chi:.3f}, "
+                f"N<sub>b,Rd,y</sub> = {by.N_b_Rd_kN:,.1f} kN, "
+                f"utilization = <span style='color:{util_color};font-weight:bold;'>"
+                f"{by.utilization * 100:.1f}%</span> {_pass_fail_badge(by.passed)}{skip_note}"
+            )
 
-    # Buckling z
-    if result.buckling_z:
-        bz = result.buckling_z
-        util_color = _utilization_color(bz.utilization)
-        skip_note = " (skip: \u03bb\u0304 \u2264 0.2)" if bz.skip_buckling else ""
-        lines.append(
-            f"<b>Buckling z-axis</b>: \u03c7<sub>z</sub> = {bz.chi:.3f}, "
-            f"N<sub>b,Rd,z</sub> = {bz.N_b_Rd_kN:,.1f} kN, "
-            f"utilization = <span style='color:{util_color};font-weight:bold;'>"
-            f"{bz.utilization * 100:.1f}%</span> {_pass_fail_badge(bz.passed)}{skip_note}"
-        )
+        if result.buckling_z:
+            bz = result.buckling_z
+            util_color = _utilization_color(bz.utilization)
+            skip_note = " (skip: \u03bb\u0304 \u2264 0.2)" if bz.skip_buckling else ""
+            lines.append(
+                f"<b>Buckling z-axis</b>: \u03c7<sub>z</sub> = {bz.chi:.3f}, "
+                f"N<sub>b,Rd,z</sub> = {bz.N_b_Rd_kN:,.1f} kN, "
+                f"utilization = <span style='color:{util_color};font-weight:bold;'>"
+                f"{bz.utilization * 100:.1f}%</span> {_pass_fail_badge(bz.passed)}{skip_note}"
+            )
 
     # Governing
     gov_color = _utilization_color(result.governing_utilization)
     gov_label = result.governing_check.replace("_", " ")
+    if _single_axis_results:
+        gov_label = gov_label.replace("buckling y", "buckling").replace(
+            "buckling z", "buckling"
+        )
     lines.append(
         f"<br><b>Governing check</b>: <b>{gov_label}</b>, "
         f"utilization = <span style='color:{gov_color};font-weight:bold;font-size:1.1em;'>"
@@ -755,157 +829,17 @@ if result is not None:
     st.divider()
 
     # -------------------------------------------------------------------
-    # Step-by-step calculation
+    # Step-by-step calculation (rendered from solver's build_latex_steps)
     # -------------------------------------------------------------------
 
     if st.session_state.show_step_by_step:
         st.subheader("Step-by-step Calculation")
 
-        # --- Strength check ---
-        st.markdown("### Strength Check (EN 1993-1-1)")
-        sr = result.strength
-
-        force_type = "tension" if sr.is_tension else "compression"
-        st.markdown(f"**Force direction**: N_Ed = {inp.N_Ed_kN:+.1f} kN \u2192 **{force_type}**")
-
-        st.markdown("**Method 1: Force comparison**")
-        st.latex(
-            r"N_{Rd} = \frac{A \cdot f_y}{\gamma_{M0}} = "
-            r"\frac{" + f"{inp.A_mm2:.0f}" + r" \cdot " + f"{inp.fy_MPa:.0f}" + r"}{" + f"{inp.gamma_M0:.2f}" + r"} = "
-            + f"{sr.N_Rd_kN * KN_TO_N:,.0f}" + r" \text{ N} = " + f"{sr.N_Rd_kN:,.1f}" + r" \text{ kN}"
-        )
-        check_sym = r"\leq" if sr.force_ok else r">"
-        st.latex(
-            r"|N_{Ed}| = " + f"{sr.N_Ed_kN:,.1f}" + r" \text{{ kN}} {check} N_{{Rd}} = {nrd:,.1f} \text{{ kN}} \quad \rightarrow \text{{ {verdict}}}".format(
-                check=check_sym, nrd=sr.N_Rd_kN, verdict="OK!" if sr.force_ok else "FAIL",
-            )
-        )
-        st.latex(
-            r"\text{Utilization: } \frac{|N_{Ed}|}{N_{Rd}} = \frac{"
-            + f"{sr.N_Ed_kN:,.1f}" + r"}{" + f"{sr.N_Rd_kN:,.1f}" + r"} = "
-            + f"{sr.utilization * 100:.1f}" + r"\%"
-        )
-
-        st.markdown("**Method 2: Stress comparison**")
-        st.latex(
-            r"\sigma_{Ed} = \frac{|N_{Ed}|}{A} = \frac{"
-            + f"{sr.N_Ed_kN * KN_TO_N:,.0f}" + r"}{" + f"{inp.A_mm2:.0f}" + r"} = "
-            + f"{sr.sigma_Ed_MPa:.1f}" + r" \text{ MPa}"
-        )
-        check_sym = r"\leq" if sr.stress_ok else r">"
-        st.latex(
-            r"\sigma_{Ed} = " + f"{sr.sigma_Ed_MPa:.1f}"
-            + r" \text{{ MPa}} {check} \frac{{f_y}}{{\gamma_{{M0}}}} = {srd:.1f} \text{{ MPa}} \quad \rightarrow \text{{ {verdict}}}".format(
-                check=check_sym, srd=sr.sigma_Rd_MPa, verdict="OK!" if sr.stress_ok else "FAIL",
-            )
-        )
-
-        st.markdown("**Method 3: Area comparison**")
-        st.latex(
-            r"A_{min} = \frac{|N_{Ed}| \cdot \gamma_{M0}}{f_y} = \frac{"
-            + f"{sr.N_Ed_kN * KN_TO_N:,.0f}" + r" \cdot " + f"{inp.gamma_M0:.2f}" + r"}{" + f"{inp.fy_MPa:.0f}" + r"} = "
-            + f"{sr.A_min_mm2:,.1f}" + r" \text{ mm}^2"
-        )
-        check_sym = r"\geq" if sr.area_ok else r"<"
-        st.latex(
-            r"A = " + f"{inp.A_mm2:,.1f}"
-            + r" \text{{ mm}}^2 {check} A_{{min}} = {amin:,.1f} \text{{ mm}}^2 \quad \rightarrow \text{{ {verdict}}}".format(
-                check=check_sym, amin=sr.A_min_mm2, verdict="OK!" if sr.area_ok else "FAIL",
-            )
-        )
-
-        # --- Buckling check ---
-        if is_compression:
-            for bax in (result.buckling_y, result.buckling_z):
-                if bax is None:
-                    continue
-
-                st.markdown(f"### Buckling Check -- {bax.axis_label}-axis (EN 1993-1-1 cl. 6.3.1)")
-
-                st.markdown(f"**Step 1: Effective length**")
-                st.latex(
-                    r"L_{cr," + bax.axis_label + r"} = \mu_{" + bax.axis_label + r"} \cdot L = "
-                    + f"{bax.mu:.1f}" + r" \cdot " + f"{bax.L_m:.2f}" + r" = "
-                    + f"{bax.L_cr_m:.2f}" + r" \text{ m} = " + f"{bax.L_cr_mm:.0f}" + r" \text{ mm}"
-                )
-
-                st.markdown(f"**Step 2: Radius of gyration**")
-                st.latex(
-                    r"i_{" + bax.axis_label + r"} = \sqrt{\frac{I_{" + bax.axis_label + r"}}{A}} = \sqrt{\frac{"
-                    + f"{bax.I_mm4:,.0f}" + r"}{" + f"{inp.A_mm2:.0f}" + r"}} = "
-                    + f"{bax.i_mm:.1f}" + r" \text{ mm}"
-                )
-
-                st.markdown(f"**Step 3: Characteristic compressive resistance**")
-                st.latex(
-                    r"N_{Rk} = A \cdot f_y = " + f"{inp.A_mm2:.0f}" + r" \cdot " + f"{inp.fy_MPa:.0f}"
-                    + r" = " + f"{bax.N_Rk_kN * KN_TO_N:,.0f}" + r" \text{ N} = " + f"{bax.N_Rk_kN:,.1f}" + r" \text{ kN}"
-                )
-
-                st.markdown(f"**Step 4: Euler critical force**")
-                st.latex(
-                    r"N_{cr," + bax.axis_label + r"} = \frac{\pi^2 \cdot E \cdot I_{" + bax.axis_label + r"}}{L_{cr," + bax.axis_label + r"}^2} = "
-                    r"\frac{\pi^2 \cdot " + f"{inp.E_MPa:,.0f}" + r" \cdot " + f"{bax.I_mm4:,.0f}" + r"}{" + f"{bax.L_cr_mm:.0f}" + r"^2} = "
-                    + f"{bax.N_cr_kN * KN_TO_N:,.0f}" + r" \text{ N} = " + f"{bax.N_cr_kN:,.1f}" + r" \text{ kN}"
-                )
-
-                st.markdown(f"**Step 5: Relative slenderness**")
-                st.latex(
-                    r"\bar{\lambda}_{" + bax.axis_label + r"} = \sqrt{\frac{N_{Rk}}{N_{cr," + bax.axis_label + r"}}} = "
-                    r"\sqrt{\frac{" + f"{bax.N_Rk_kN:,.1f}" + r"}{" + f"{bax.N_cr_kN:,.1f}" + r"}} = "
-                    + f"{bax.lambda_bar:.3f}"
-                )
-
-                if bax.skip_buckling:
-                    st.success(
-                        f"\u03bb\u0304 = {bax.lambda_bar:.3f} \u2264 {SLENDERNESS_THRESHOLD} "
-                        f"\u2192 Buckling check may be skipped (member is stocky). "
-                        f"Continuing for educational purposes."
-                    )
-
-                st.markdown(f"**Step 6: Buckling curve selection**")
-                st.latex(
-                    r"\text{Buckling curve: }" + f'\\text{{"{bax.curve}"}}' + r" \quad \rightarrow \quad "
-                    r"\alpha = " + f"{bax.alpha}"
-                )
-
-                st.markdown(f"**Step 7: Intermediate factor \u03a6**")
-                st.latex(
-                    r"\Phi_{" + bax.axis_label + r"} = 0.5 \cdot \left[1 + \alpha \cdot (\bar{\lambda} - 0.2) + \bar{\lambda}^2\right]"
-                )
-                st.latex(
-                    r"\Phi_{" + bax.axis_label + r"} = 0.5 \cdot \left[1 + " + f"{bax.alpha}" + r" \cdot ("
-                    + f"{bax.lambda_bar:.3f}" + r" - 0.2) + " + f"{bax.lambda_bar:.3f}" + r"^2\right] = "
-                    + f"{bax.Phi:.3f}"
-                )
-
-                st.markdown(f"**Step 8: Reduction factor \u03c7**")
-                st.latex(
-                    r"\chi_{" + bax.axis_label + r"} = \frac{1}{\Phi + \sqrt{\Phi^2 - \bar{\lambda}^2}} = "
-                    r"\frac{1}{" + f"{bax.Phi:.3f}" + r" + \sqrt{" + f"{bax.Phi:.3f}" + r"^2 - "
-                    + f"{bax.lambda_bar:.3f}" + r"^2}} = " + f"{bax.chi:.3f}"
-                )
-
-                st.markdown(f"**Step 9: Design buckling resistance**")
-                st.latex(
-                    r"N_{b,Rd," + bax.axis_label + r"} = \frac{\chi_{" + bax.axis_label + r"} \cdot A \cdot f_y}{\gamma_{M1}} = "
-                    r"\frac{" + f"{bax.chi:.3f}" + r" \cdot " + f"{inp.A_mm2:.0f}" + r" \cdot " + f"{inp.fy_MPa:.0f}" + r"}{" + f"{inp.gamma_M1:.2f}" + r"} = "
-                    + f"{bax.N_b_Rd_kN * KN_TO_N:,.0f}" + r" \text{ N} = " + f"{bax.N_b_Rd_kN:,.1f}" + r" \text{ kN}"
-                )
-
-                st.markdown(f"**Step 10: Verification**")
-                check_sym = r"\leq" if bax.passed else r">"
-                st.latex(
-                    r"|N_{Ed}| = " + f"{bax.N_Ed_kN:,.1f}" + r" \text{{ kN}} {check} N_{{b,Rd,{ax}}} = {nbrd:,.1f} \text{{ kN}} \quad \rightarrow \text{{ {verdict}}}".format(
-                        check=check_sym, ax=bax.axis_label, nbrd=bax.N_b_Rd_kN,
-                        verdict="OK!" if bax.passed else "FAIL",
-                    )
-                )
-                st.latex(
-                    r"\text{Utilization: } \frac{|N_{Ed}|}{N_{b,Rd," + bax.axis_label + r"}} = \frac{"
-                    + f"{bax.N_Ed_kN:,.1f}" + r"}{" + f"{bax.N_b_Rd_kN:,.1f}" + r"} = "
-                    + f"{bax.utilization * 100:.1f}" + r"\%"
-                )
+        for heading, latex_str in build_latex_steps(result, inp):
+            if heading:
+                st.markdown(f"**{heading}**", unsafe_allow_html=True)
+            if latex_str:
+                st.latex(latex_str)
 
         # --- Conclusion ---
         st.markdown("### Conclusion")
@@ -920,3 +854,53 @@ if result is not None:
                 f"**Member FAILS.** "
                 f"Governing: {gov_label} at {result.governing_utilization * 100:.1f}% utilization."
             )
+
+
+# ---------------------------------------------------------------------------
+# Render download buttons in the sidebar placeholder.
+# Done at end of script so `result` and `inp` are guaranteed to match the
+# on-screen output (rather than carrying over stale values from the previous
+# rerun, which would happen if rendered earlier inside the sidebar block).
+# ---------------------------------------------------------------------------
+
+if result is not None:
+    _member_name = st.session_state.get("member_name", "")
+    _chart_fig = st.session_state.get("_last_chart_figure")
+    _safe_name = (_member_name.strip() or "member").replace(" ", "_")
+
+    _timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _steps = build_latex_steps(result, inp, skip_buckling_if_stocky=True)
+    _summary_html = build_summary_html(result, inp, _member_name, timestamp=_timestamp)
+    _chart_html = (
+        figure_to_img_html(_chart_fig, alt="Buckling curves")
+        if _chart_fig is not None else ""
+    )
+    _intro_html = _summary_html + _chart_html
+    _report_html = render_latex_html(
+        f"Member Check: {_member_name or '(unnamed)'}",
+        _steps,
+        intro_html=_intro_html,
+    )
+
+    with _download_slot:
+        st.download_button(
+            "Download Report (HTML)",
+            data=_report_html,
+            file_name=f"{_safe_name}_member_report.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Self-contained HTML — open in browser, print → Save as PDF",
+        )
+
+        if _chart_fig is not None:
+            try:
+                _chart_png = _chart_fig.to_image(format="png", scale=2)
+                st.download_button(
+                    "Download Buckling Chart (PNG)",
+                    data=_chart_png,
+                    file_name=f"{_safe_name}_buckling_chart.png",
+                    mime="image/png",
+                    use_container_width=True,
+                )
+            except Exception as _img_err:
+                st.caption(f"Chart export unavailable: {_img_err}")

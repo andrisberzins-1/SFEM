@@ -470,3 +470,563 @@ def buckling_curve_points(
         chis.append(chi)
 
     return lambdas, chis
+
+
+# ---------------------------------------------------------------------------
+# LaTeX step builder
+# ---------------------------------------------------------------------------
+
+def build_latex_steps(
+    result: MemberCheckResult,
+    inp: MemberInput,
+    skip_buckling_if_stocky: bool = False,
+) -> list[tuple[str, str]]:
+    """Build step-by-step LaTeX strings for strength + buckling check.
+
+    Returns a list of (heading, latex_expression) tuples.
+    Empty heading means continuation of the previous section.
+
+    When skip_buckling_if_stocky=True:
+    - Tension: shows strength check only.
+    - Compression with lambda_bar <= 0.2 (all axes): strength only, note
+      that buckling is not required.
+    - Compression with lambda_bar > 0.2 (any axis): buckling only
+      (strength is skipped — buckling governs).
+
+    When Iy == Iz and mu_y == mu_z and curve_y == curve_z (single-axis mode):
+    emits one buckling check section without axis subscripts.
+    """
+    steps: list[tuple[str, str]] = []
+    sr = result.strength
+    is_compression = not sr.is_tension
+
+    # --- Task A: determine what to show ---
+    show_strength = True
+    if skip_buckling_if_stocky and is_compression:
+        any_non_stocky = any(
+            bax is not None and not bax.skip_buckling
+            for bax in (result.buckling_y, result.buckling_z)
+        )
+        if any_non_stocky:
+            show_strength = False  # buckling governs, skip strength
+
+    # --- Task C: single-axis detection ---
+    single_axis = (
+        is_compression
+        and inp.Iy_mm4 == inp.Iz_mm4
+        and inp.mu_y == inp.mu_z
+        and inp.curve_y == inp.curve_z
+    )
+
+    # --- Strength check ---
+    if show_strength:
+        force_type = "tension" if sr.is_tension else "compression"
+        steps.append((
+            f"Strength Check (EN 1993-1-1) \u2014 {force_type}",
+            "",
+        ))
+        steps.append((
+            f"Force direction: N_{{Ed}} = {inp.N_Ed_kN:+.1f} kN \u2192 {force_type}",
+            "",
+        ))
+
+        # Method 1: Force comparison
+        check_sym = r"\leq" if sr.force_ok else r">"
+        steps.append((
+            "Method 1: Force comparison",
+            r"N_{Rd} = \frac{A \cdot f_y}{\gamma_{M0}} = "
+            r"\frac{" + f"{inp.A_mm2:.0f}" + r" \cdot " + f"{inp.fy_MPa:.0f}"
+            + r"}{" + f"{inp.gamma_M0:.2f}" + r"} = "
+            + f"{sr.N_Rd_kN * KN_TO_N:,.0f}" + r" \text{ N} = "
+            + f"{sr.N_Rd_kN:,.1f}" + r" \text{ kN}",
+        ))
+        verdict = "OK!" if sr.force_ok else "FAIL"
+        steps.append((
+            "",
+            r"|N_{Ed}| = " + f"{sr.N_Ed_kN:,.1f}"
+            + r" \text{ kN} " + check_sym + r" N_{Rd} = "
+            + f"{sr.N_Rd_kN:,.1f}" + r" \text{ kN}"
+            + r" \quad \rightarrow \text{ " + verdict + r"}",
+        ))
+        steps.append((
+            "",
+            r"\text{Utilization: } \frac{|N_{Ed}|}{N_{Rd}} = \frac{"
+            + f"{sr.N_Ed_kN:,.1f}" + r"}{" + f"{sr.N_Rd_kN:,.1f}" + r"} = "
+            + f"{sr.utilization * 100:.1f}" + r"\%",
+        ))
+
+        # Method 2: Stress comparison
+        check_sym = r"\leq" if sr.stress_ok else r">"
+        verdict = "OK!" if sr.stress_ok else "FAIL"
+        steps.append((
+            "Method 2: Stress comparison",
+            r"\sigma_{Ed} = \frac{|N_{Ed}|}{A} = \frac{"
+            + f"{sr.N_Ed_kN * KN_TO_N:,.0f}" + r"}{" + f"{inp.A_mm2:.0f}" + r"} = "
+            + f"{sr.sigma_Ed_MPa:.1f}" + r" \text{ MPa}",
+        ))
+        steps.append((
+            "",
+            r"\sigma_{Ed} = " + f"{sr.sigma_Ed_MPa:.1f}"
+            + r" \text{ MPa} " + check_sym
+            + r" \frac{f_y}{\gamma_{M0}} = "
+            + f"{sr.sigma_Rd_MPa:.1f}" + r" \text{ MPa}"
+            + r" \quad \rightarrow \text{ " + verdict + r"}",
+        ))
+
+        # Method 3: Area comparison
+        check_sym = r"\geq" if sr.area_ok else r"<"
+        verdict = "OK!" if sr.area_ok else "FAIL"
+        steps.append((
+            "Method 3: Area comparison",
+            r"A_{min} = \frac{|N_{Ed}| \cdot \gamma_{M0}}{f_y} = \frac{"
+            + f"{sr.N_Ed_kN * KN_TO_N:,.0f}" + r" \cdot " + f"{inp.gamma_M0:.2f}"
+            + r"}{" + f"{inp.fy_MPa:.0f}" + r"} = "
+            + f"{sr.A_min_mm2:,.1f}" + r" \text{ mm}^2",
+        ))
+        steps.append((
+            "",
+            r"A = " + f"{inp.A_mm2:,.1f}"
+            + r" \text{ mm}^2 " + check_sym + r" A_{min} = "
+            + f"{sr.A_min_mm2:,.1f}" + r" \text{ mm}^2"
+            + r" \quad \rightarrow \text{ " + verdict + r"}",
+        ))
+
+    # --- Buckling check ---
+    if is_compression:
+        # Single-axis: show only y-axis check (identical to z)
+        axes_to_show = [result.buckling_y]
+        if not single_axis:
+            axes_to_show.append(result.buckling_z)
+
+        for bax in axes_to_show:
+            if bax is None:
+                continue
+
+            # Build subscript labels (omit axis for single-axis mode)
+            if single_axis:
+                I_s = "I"
+                mu_s = r"\mu"
+                Lcr_s = "L_{cr}"
+                Ncr_s = "N_{cr}"
+                lam_s = r"\bar{\lambda}"
+                Phi_s = r"\Phi"
+                chi_s = r"\chi"
+                NbRd_s = "N_{b,Rd}"
+                heading_sfx = ""
+            else:
+                a = bax.axis_label
+                I_s = f"I_{{{a}}}"
+                mu_s = rf"\mu_{{{a}}}"
+                Lcr_s = f"L_{{cr,{a}}}"
+                Ncr_s = f"N_{{cr,{a}}}"
+                lam_s = rf"\bar{{\lambda}}_{{{a}}}"
+                Phi_s = rf"\Phi_{{{a}}}"
+                chi_s = rf"\chi_{{{a}}}"
+                NbRd_s = f"N_{{b,Rd,{a}}}"
+                heading_sfx = f" \u2014 {a}-axis"
+
+            steps.append((
+                f"Buckling Check{heading_sfx} (EN 1993-1-1 cl. 6.3.1)",
+                "",
+            ))
+
+            # Step 1: Effective length
+            steps.append((
+                "Step 1: Effective length",
+                Lcr_s + r" = " + mu_s + r" \cdot L = "
+                + f"{bax.mu:.1f}" + r" \cdot " + f"{bax.L_m:.2f}" + r" = "
+                + f"{bax.L_cr_m:.2f}" + r" \text{ m} = "
+                + f"{bax.L_cr_mm:.0f}" + r" \text{ mm}",
+            ))
+
+            # Step 2: Characteristic compressive resistance
+            steps.append((
+                "Step 2: Characteristic compressive resistance",
+                r"N_{Rk} = A \cdot f_y = " + f"{inp.A_mm2:.0f}" + r" \cdot "
+                + f"{inp.fy_MPa:.0f}"
+                + r" = " + f"{bax.N_Rk_kN * KN_TO_N:,.0f}" + r" \text{ N} = "
+                + f"{bax.N_Rk_kN:,.1f}" + r" \text{ kN}",
+            ))
+
+            # Step 3: Euler critical force
+            steps.append((
+                "Step 3: Euler critical force",
+                Ncr_s + r" = \frac{\pi^2 \cdot E \cdot " + I_s
+                + r"}{" + Lcr_s + r"^2} = "
+                + r"\frac{\pi^2 \cdot " + f"{inp.E_MPa:,.0f}" + r" \cdot "
+                + f"{bax.I_mm4:,.0f}" + r"}{" + f"{bax.L_cr_mm:.0f}" + r"^2} = "
+                + f"{bax.N_cr_kN * KN_TO_N:,.0f}" + r" \text{ N} = "
+                + f"{bax.N_cr_kN:,.1f}" + r" \text{ kN}",
+            ))
+
+            # Step 4: Relative slenderness
+            steps.append((
+                "Step 4: Relative slenderness",
+                lam_s + r" = \sqrt{\frac{N_{Rk}}{" + Ncr_s + r"}} = "
+                + r"\sqrt{\frac{" + f"{bax.N_Rk_kN:,.1f}" + r"}{" + f"{bax.N_cr_kN:,.1f}"
+                + r"}} = " + f"{bax.lambda_bar:.3f}",
+            ))
+
+            # Skip buckling if stocky
+            if skip_buckling_if_stocky and bax.skip_buckling:
+                steps.append((
+                    "",
+                    lam_s + r" = " + f"{bax.lambda_bar:.3f}"
+                    + r" \leq " + f"{SLENDERNESS_THRESHOLD}"
+                    + r" \quad \Rightarrow \quad "
+                    + r"\text{Buckling check not required (stocky member).}",
+                ))
+                steps.append((
+                    "",
+                    r"\text{Member verified by strength check only.}",
+                ))
+                continue
+
+            if bax.skip_buckling:
+                steps.append((
+                    "",
+                    lam_s + r" = " + f"{bax.lambda_bar:.3f}"
+                    + r" \leq " + f"{SLENDERNESS_THRESHOLD}"
+                    + r" \quad \text{(stocky member \u2014 continuing for educational purposes)}",
+                ))
+
+            # Step 5: Buckling curve selection
+            steps.append((
+                "Step 5: Buckling curve selection",
+                r"\text{Buckling curve: }" + f'\\text{{"{bax.curve}"}}'
+                + r" \quad \rightarrow \quad \alpha = " + f"{bax.alpha}",
+            ))
+
+            # Step 6: Intermediate factor Φ
+            steps.append((
+                "Step 6: Intermediate factor \u03a6",
+                Phi_s + r" = 0.5 \cdot \left[1 + \alpha \cdot ("
+                + lam_s + r" - 0.2) + " + lam_s + r"^2\right]",
+            ))
+            steps.append((
+                "",
+                Phi_s + r" = 0.5 \cdot \left[1 + "
+                + f"{bax.alpha}" + r" \cdot (" + f"{bax.lambda_bar:.3f}"
+                + r" - 0.2) + " + f"{bax.lambda_bar:.3f}" + r"^2\right] = "
+                + f"{bax.Phi:.3f}",
+            ))
+
+            # Step 7: Reduction factor χ
+            steps.append((
+                "Step 7: Reduction factor \u03c7",
+                chi_s + r" = \frac{1}{" + Phi_s + r" + \sqrt{" + Phi_s + r"^2 - "
+                + lam_s + r"^2}} = "
+                + r"\frac{1}{" + f"{bax.Phi:.3f}" + r" + \sqrt{"
+                + f"{bax.Phi:.3f}" + r"^2 - " + f"{bax.lambda_bar:.3f}"
+                + r"^2}} = " + f"{bax.chi:.3f}",
+            ))
+
+            # Step 8: Design buckling resistance
+            steps.append((
+                "Step 8: Design buckling resistance",
+                NbRd_s + r" = \frac{" + chi_s
+                + r" \cdot A \cdot f_y}{\gamma_{M1}} = "
+                + r"\frac{" + f"{bax.chi:.3f}" + r" \cdot " + f"{inp.A_mm2:.0f}"
+                + r" \cdot " + f"{inp.fy_MPa:.0f}" + r"}{" + f"{inp.gamma_M1:.2f}"
+                + r"} = " + f"{bax.N_b_Rd_kN * KN_TO_N:,.0f}" + r" \text{ N} = "
+                + f"{bax.N_b_Rd_kN:,.1f}" + r" \text{ kN}",
+            ))
+
+            # Step 9: Verification
+            check_sym = r"\leq" if bax.passed else r">"
+            verdict = "OK!" if bax.passed else "FAIL"
+            steps.append((
+                "Step 9: Verification",
+                r"|N_{Ed}| = " + f"{bax.N_Ed_kN:,.1f}" + r" \text{ kN} "
+                + check_sym + r" " + NbRd_s + r" = "
+                + f"{bax.N_b_Rd_kN:,.1f}" + r" \text{ kN}"
+                + r" \quad \rightarrow \text{ " + verdict + r"}",
+            ))
+            steps.append((
+                "",
+                r"\text{Utilization: } \frac{|N_{Ed}|}{" + NbRd_s
+                + r"} = \frac{" + f"{bax.N_Ed_kN:,.1f}"
+                + r"}{" + f"{bax.N_b_Rd_kN:,.1f}" + r"} = "
+                + f"{bax.utilization * 100:.1f}" + r"\%",
+            ))
+
+    # --- Conclusion ---
+    gov_label = result.governing_check.replace("_", " ")
+    if single_axis:
+        gov_label = gov_label.replace("buckling y", "buckling").replace(
+            "buckling z", "buckling"
+        )
+    if result.overall_passed:
+        steps.append((
+            "Conclusion",
+            r"\text{Member passes all checks. Governing: "
+            + gov_label + r" at "
+            + f"{result.governing_utilization * 100:.1f}" + r"\% utilization.}",
+        ))
+    else:
+        steps.append((
+            "Conclusion",
+            r"\text{Member FAILS. Governing: "
+            + gov_label + r" at "
+            + f"{result.governing_utilization * 100:.1f}" + r"\% utilization.}",
+        ))
+
+    return steps
+
+
+# ---------------------------------------------------------------------------
+# HTML rendering for LaTeX steps
+# ---------------------------------------------------------------------------
+
+def _pass_fail_html(passed: bool) -> str:
+    """Plain HTML pass/fail badge (no Streamlit dependency)."""
+    if passed:
+        return '<span class="report-pass">✅ PASS</span>'
+    return '<span class="report-fail">❌ FAIL</span>'
+
+
+def _utilization_class(util: float) -> str:
+    """CSS class for utilization color: pass / warn / fail."""
+    if util <= 0.8:
+        return "report-pass"
+    elif util <= 1.0:
+        return "report-warn"
+    return "report-fail"
+
+
+def build_summary_html(
+    result: MemberCheckResult,
+    inp: MemberInput,
+    member_name: str,
+    timestamp: str = "",
+) -> str:
+    """Build the input + results summary block for the HTML report.
+
+    Mirrors the on-screen "Results Summary" block plus a compact input
+    table (geometry, section, material, boundary conditions). Returned
+    HTML is intended to be passed to ``render_latex_html`` via the
+    ``intro_html`` parameter.
+    """
+    # --- Detect single-axis mode (both axes identical) ---
+    single_axis = (
+        result.buckling_y is not None
+        and result.buckling_z is not None
+        and inp.Iy_mm4 == inp.Iz_mm4
+        and inp.mu_y == inp.mu_z
+        and inp.curve_y == inp.curve_z
+    )
+
+    # --- Meta line ---
+    name_label = member_name.strip() or "(unnamed)"
+    meta_parts = [f"Member: <b>{name_label}</b>"]
+    if timestamp:
+        meta_parts.append(f"Generated: {timestamp}")
+    meta_html = " &nbsp;|&nbsp; ".join(meta_parts)
+
+    # --- Input table ---
+    input_rows = [
+        ("N<sub>Ed</sub>", f"{inp.N_Ed_kN:+.2f} kN",
+         "tension" if inp.N_Ed_kN > 0 else "compression"),
+        ("L", f"{inp.L_m:.3f} m", "geometric length"),
+        ("A", f"{inp.A_mm2:,.1f} mm²", "cross-section area"),
+        ("I<sub>y</sub>", f"{inp.Iy_mm4:,.0f} mm⁴", "moment of inertia (y)"),
+        ("I<sub>z</sub>", f"{inp.Iz_mm4:,.0f} mm⁴", "moment of inertia (z)"),
+        ("f<sub>y</sub>", f"{inp.fy_MPa:.0f} MPa", "yield strength"),
+        ("E", f"{inp.E_MPa:,.0f} MPa", "Young's modulus"),
+        ("μ<sub>y</sub> / μ<sub>z</sub>",
+         f"{inp.mu_y} / {inp.mu_z}",
+         "effective length factors"),
+        ("Curve y / z",
+         f"{inp.curve_y} / {inp.curve_z}",
+         "buckling curves (EN 1993-1-1 Table 6.1)"),
+        ("γ<sub>M0</sub> / γ<sub>M1</sub>",
+         f"{inp.gamma_M0} / {inp.gamma_M1}",
+         "partial safety factors"),
+    ]
+    input_table = (
+        '<table class="report-table">'
+        '<tr><th>Symbol</th><th>Value</th><th>Description</th></tr>'
+        + "".join(
+            f"<tr><td>{sym}</td><td>{val}</td><td>{desc}</td></tr>"
+            for sym, val, desc in input_rows
+        )
+        + "</table>"
+    )
+
+    # --- Direction note ---
+    if result.strength.is_tension:
+        direction_html = (
+            f"<p><b>N<sub>Ed</sub> = {inp.N_Ed_kN:+.1f} kN</b> "
+            "&rarr; member is in <b>TENSION</b>. Only strength check required.</p>"
+        )
+    else:
+        direction_html = (
+            f"<p><b>N<sub>Ed</sub> = {inp.N_Ed_kN:+.1f} kN</b> "
+            "&rarr; member is in <b>COMPRESSION</b>. "
+            "Strength + buckling checks required.</p>"
+        )
+
+    # --- Utilization summary lines ---
+    lines: list[str] = []
+
+    sr = result.strength
+    util_cls = _utilization_class(sr.utilization)
+    lines.append(
+        f"<b>Strength check</b>: N<sub>Rd</sub> = {sr.N_Rd_kN:,.1f} kN, "
+        f'utilization = <span class="{util_cls}">'
+        f"{sr.utilization * 100:.1f}%</span> {_pass_fail_html(sr.passed)}"
+    )
+
+    if single_axis and result.buckling_y is not None:
+        by = result.buckling_y
+        util_cls = _utilization_class(by.utilization)
+        skip_note = " (skip: λ̄ ≤ 0.2)" if by.skip_buckling else ""
+        lines.append(
+            f"<b>Buckling</b>: χ = {by.chi:.3f}, "
+            f"N<sub>b,Rd</sub> = {by.N_b_Rd_kN:,.1f} kN, "
+            f'utilization = <span class="{util_cls}">'
+            f"{by.utilization * 100:.1f}%</span> "
+            f"{_pass_fail_html(by.passed)}{skip_note}"
+        )
+    else:
+        if result.buckling_y is not None:
+            by = result.buckling_y
+            util_cls = _utilization_class(by.utilization)
+            skip_note = " (skip: λ̄ ≤ 0.2)" if by.skip_buckling else ""
+            lines.append(
+                f"<b>Buckling y-axis</b>: χ<sub>y</sub> = {by.chi:.3f}, "
+                f"N<sub>b,Rd,y</sub> = {by.N_b_Rd_kN:,.1f} kN, "
+                f'utilization = <span class="{util_cls}">'
+                f"{by.utilization * 100:.1f}%</span> "
+                f"{_pass_fail_html(by.passed)}{skip_note}"
+            )
+        if result.buckling_z is not None:
+            bz = result.buckling_z
+            util_cls = _utilization_class(bz.utilization)
+            skip_note = " (skip: λ̄ ≤ 0.2)" if bz.skip_buckling else ""
+            lines.append(
+                f"<b>Buckling z-axis</b>: χ<sub>z</sub> = {bz.chi:.3f}, "
+                f"N<sub>b,Rd,z</sub> = {bz.N_b_Rd_kN:,.1f} kN, "
+                f'utilization = <span class="{util_cls}">'
+                f"{bz.utilization * 100:.1f}%</span> "
+                f"{_pass_fail_html(bz.passed)}{skip_note}"
+            )
+
+    # Governing
+    gov_cls = _utilization_class(result.governing_utilization)
+    gov_label = result.governing_check.replace("_", " ")
+    if single_axis:
+        gov_label = (
+            gov_label.replace("buckling y", "buckling")
+                     .replace("buckling z", "buckling")
+        )
+    lines.append(
+        f"<br><b>Governing check</b>: <b>{gov_label}</b>, "
+        f'utilization = <span class="{gov_cls}" style="font-size:1.1em;">'
+        f"{result.governing_utilization * 100:.1f}%</span> "
+        f"{_pass_fail_html(result.overall_passed)}"
+    )
+
+    summary_block = (
+        '<div class="report-summary">'
+        + "<br>".join(lines)
+        + "</div>"
+    )
+
+    return (
+        f'<div class="report-meta">{meta_html}</div>\n'
+        '<h3>Member input</h3>\n'
+        + input_table
+        + '\n<h3>Results summary</h3>\n'
+        + direction_html
+        + summary_block
+    )
+
+
+def figure_to_img_html(fig, alt: str = "figure") -> str:
+    """Encode a Plotly figure as a base64 PNG ``<img>`` tag.
+
+    Returns empty string if image export (kaleido) is unavailable.
+    """
+    import base64
+    try:
+        png_bytes = fig.to_image(format="png", scale=2)
+    except Exception:
+        return ""
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return (
+        '<div class="report-image">'
+        f'<img src="data:image/png;base64,{b64}" alt="{alt}">'
+        '</div>'
+    )
+
+
+def render_latex_html(
+    title: str,
+    steps: list[tuple[str, str]],
+    intro_html: str = "",
+) -> str:
+    """Render a self-contained HTML report with KaTeX-rendered LaTeX.
+
+    The returned HTML opens in any browser and can be printed to PDF
+    (browser print dialog -> "Save as PDF").
+
+    Args:
+        title: Report title shown as ``<h2>``.
+        steps: List of ``(heading, latex)`` tuples for the calculation steps.
+        intro_html: Optional HTML inserted between the title and the steps
+            (e.g. input table, results summary, embedded chart). Pass an
+            empty string to keep the bare-steps layout.
+    """
+    body_lines = [f"<h2>{title}</h2>"]
+    if intro_html:
+        body_lines.append(intro_html)
+    if steps:
+        body_lines.append('<h2 class="section-heading">Step-by-step calculation</h2>')
+    for heading, latex_str in steps:
+        if heading:
+            body_lines.append(f"<h3>{heading}</h3>")
+        if latex_str:
+            body_lines.append(f"<p>$${latex_str}$$</p>")
+    body = "\n".join(body_lines)
+    return (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
+        '<meta charset="UTF-8">\n'
+        f"<title>{title}</title>\n"
+        '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">\n'
+        '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>\n'
+        '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>\n'
+        "<style>\n"
+        "  body { font-family: sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; line-height: 1.6; color: #222; }\n"
+        "  h2 { border-bottom: 2px solid #333; padding-bottom: 0.3em; margin-top: 1.6em; }\n"
+        "  h2:first-of-type { margin-top: 0; }\n"
+        "  h3 { margin-top: 1.5em; color: #333; }\n"
+        "  .katex-display { text-align: left !important; margin: 0.5em 0 !important; }\n"
+        "  .report-summary { background: #f7f7f9; border-left: 4px solid #4a76b8; padding: 0.8em 1.2em; margin: 1em 0; line-height: 1.9; font-size: 0.95em; }\n"
+        "  .report-summary b { color: #1a3050; }\n"
+        "  .report-image { text-align: center; margin: 1em 0; }\n"
+        "  .report-image img { max-width: 100%; height: auto; }\n"
+        "  .report-meta { color: #666; font-size: 0.9em; margin-bottom: 1em; }\n"
+        "  .report-pass { color: #28a745; font-weight: bold; }\n"
+        "  .report-fail { color: #dc3545; font-weight: bold; }\n"
+        "  .report-warn { color: #b78a00; font-weight: bold; }\n"
+        "  table.report-table { border-collapse: collapse; margin: 0.6em 0; font-size: 0.95em; }\n"
+        "  table.report-table td, table.report-table th { border: 1px solid #ccc; padding: 4px 10px; text-align: left; }\n"
+        "  table.report-table th { background: #eef; }\n"
+        "  @media print {\n"
+        "    body { max-width: 100%; margin: 0; padding: 0 0.5cm; font-size: 11pt; }\n"
+        "    h2 { page-break-after: avoid; }\n"
+        "    h3 { page-break-after: avoid; }\n"
+        "    p { page-break-inside: avoid; }\n"
+        "    .report-summary { page-break-inside: avoid; }\n"
+        "    .report-image { page-break-inside: avoid; }\n"
+        "  }\n"
+        "</style>\n</head>\n<body>\n"
+        f"{body}\n"
+        "<script>\n"
+        '  renderMathInElement(document.body, {\n'
+        '    delimiters: [{ left: "$$", right: "$$", display: true }],\n'
+        "    throwOnError: false,\n"
+        "  });\n"
+        "</script>\n</body>\n</html>"
+    )

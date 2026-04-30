@@ -29,3 +29,26 @@ nul
 # Temp files
 *.tmp
 *.bak
+
+# Module templates — kept local only, never pushed to GitHub
+# (some are homework templates that students must not see)
+section_app/templates/
+buckling_app/templates/
+fem_app/templates/
+
+# User saves and computed exchange artifacts — local only
+section_app/saves/
+buckling_app/saves/
+fem_app/saves/
+exchange/
+
+# Homework prep artifacts — local only
+docs/test_KD*
+docs/SFEM_prezentacija*
+docs/build_presentation*
+docs/pptx_to_images*
+docs/presentation_assets/
+docs/slide_renders/
+docs/node_modules/
+docs/package*.json
+generate_homework.py
